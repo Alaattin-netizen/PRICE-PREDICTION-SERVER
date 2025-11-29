@@ -1,0 +1,6 @@
+area,bedrooms,bathrooms,stories,parking,mainroad,guestroom,basement,furnishingstatus,price
+2000,2,1,1,1,yes,no,no,furnished,3500000
+3000,3,2,2,1,no,yes,no,semi-furnished,4200000
+4000,4,2,2,2,yes,no,yes,unfurnished,5100000
+2500,2,1,1,0,yes,no,yes,furnished,3300000
+3500,3,2,2,1,no,yes,no,semi-furnished,4650000
