@@ -2,11 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-//READ CSV 
+//READ CSV--------------------------------------------------------------------
 
-//test
 typedef struct {
-    char **field_names;  // array of strings for column names
     char **values;       // array of strings for row values
     int num_fields;      // number of fields in the row
 } Row;
@@ -34,14 +32,13 @@ char** getFieldNames(char* line, int* num_fields) {
     return field_names;
 }
 
-Row readRow(char* line, char** field_names,int number_of_fields){
+Row readRow(char* line, int number_of_fields){
     Row row;
     int field_no =0;
     row.num_fields = number_of_fields;
     // Allocate initial space for up to 100 fields
     
     row.values = malloc(number_of_fields* sizeof(char*));
-    row.field_names = field_names;
 
     
        
@@ -70,7 +67,7 @@ Row* getTable(FILE* stream, int* row_count, char*** headers) {
 
     while (fgets(line, sizeof(line), stream)) {
         line[strcspn(line, "\r\n")] = 0;
-        Row row = readRow(line, *headers, number_of_fields);
+        Row row = readRow(line, number_of_fields);
 
         if (*row_count >= capacity) {
             capacity *= 2;
@@ -101,7 +98,8 @@ int main(){
 
     for (int i = 0; i < row_count; i++) {
         for (int j = 0; j < table->num_fields; j++) {
-            printf("%s: %s\t", table[i].field_names[j],table[i].values[j] );
+            printf("%s: %s\t", headers[j] ,table[i].values[j] );
+
           }
       }
 
