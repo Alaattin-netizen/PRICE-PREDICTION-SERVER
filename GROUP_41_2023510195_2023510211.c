@@ -395,5 +395,4 @@ int main()
     freeNormTable(normalization_table, table->num_fields, row_count);
     freeHeaders(headers, table->num_fields);
     freeTable(table, row_count);
-
 }
