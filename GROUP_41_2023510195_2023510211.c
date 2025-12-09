@@ -177,6 +177,7 @@ return Norm;
 }
 
 norm normalize_cat(char** values, int row_count, int num_of_fields){
+    
 norm Norm;
 Norm.is_num=FALSE;
 Norm.catNames = malloc(row_count*sizeof(char*));
@@ -186,6 +187,22 @@ if (!Norm.numValue) { perror("malloc"); exit(1);}
 int indexVal=0;
 int number_of_cats=0;
 for(int i=0; i<row_count; i++){
+
+    if(strcmp(values[i], "yes")==0 || strcmp(values[i], "semi-furnished")==0 )//special rule
+    {
+        Norm.numValue[i] = 1;
+        continue;
+    }else if (strcmp(values[i], "no")==0 || strcmp(values[i], "unfurnished")==0)
+    {
+        Norm.numValue[i] = 0;
+        continue;
+    }
+    else if (strcmp(values[i], "furnished")==0)
+    {
+        Norm.numValue[i]=2;
+        continue;
+    }
+    
 
     bool found =FALSE;
     for(int j=0; j<number_of_cats; j++)
@@ -197,8 +214,9 @@ for(int i=0; i<row_count; i++){
         }   
     }
     if(1-found){
-        Norm.catNames[indexVal] = strdup(values[i]);
         Norm.numValue[i] = indexVal;
+        Norm.catNames[indexVal] = strdup(values[i]);
+        
         number_of_cats++;
         indexVal++;
     }
@@ -221,15 +239,15 @@ norm* getNormTable(int number_of_fields, Row* table, int row_count){
             column_values[row] = table[row].values[i];
         }
         bool num_flag = is_num(table[0].values[i]);
-        for (int j = 0; j < row_count; j++)
-        {    
+       
+    
             if(num_flag){
                 norm = normalize_num(column_values, row_count);
             }
             else{
                 norm = normalize_cat(column_values, row_count, number_of_fields);
             }
-        }
+        
         normalTable[i] = norm;
         free(column_values);
     }
@@ -238,7 +256,44 @@ norm* getNormTable(int number_of_fields, Row* table, int row_count){
 }
 //-----------------------------------------------------------------------
 
+//garbage collection------------------------------------------------------
+void freeTable(Row* table, int row_count) {
+    for (int r = 0; r < row_count; r++) {
+        for (int c = 0; c < table[r].num_fields; c++) {
+            free(table[r].values[c]);
+        }
+        free(table[r].values);
+    }
+    free(table);
+}
 
+void freeHeaders(char** headers, int num_fields) {
+    for (int i = 0; i < num_fields; i++) {
+        free(headers[i]);
+    }
+    free(headers);
+}
+
+void freeNorm(norm* n, int row_count) {
+    if (n->is_num) {
+        free(n->numValue);
+    } else {
+        for (int i = 0; i < row_count; i++) {
+            if (n->catNames[i])
+                free(n->catNames[i]);
+        }
+        free(n->catNames);
+        free(n->numValue);
+    }
+}
+
+void freeNormTable(norm* normalTable, int number_of_fields, int row_count) {
+    for (int i = 0; i < number_of_fields; i++) {
+        freeNorm(&normalTable[i], row_count);
+    }
+    free(normalTable);
+}
+//---------------------------------------------------------------------------------
 
 int main(){
     FILE* stream = fopen("Housing.csv", "r");
@@ -260,6 +315,12 @@ int main(){
           }
           printf("\n");
       }
+      
+
+freeNormTable(normalization_table, table->num_fields, row_count);
+freeTable(table, row_count);
+freeHeaders(headers, table->num_fields);
+
 
 
 }
