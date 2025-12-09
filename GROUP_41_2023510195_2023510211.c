@@ -2,11 +2,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h> // might have to delete these
+#include <pthread.h>
+
 #define bool int
 #define TRUE 1
 #define FALSE 0
+
+#define  PORT_NUMBER 60000
 #define MAX_SAMPLES 10000
 #define MAX_FEATURES 100
+#define STRING_BUFFER_LIMIT 100
+#define PREPOC_THREAD_LIMIT 128
+#define COEFF_THREAD_LIMIT 128
 // READ CSV--------------------------------------------------------------------
 
 typedef struct
@@ -15,20 +22,13 @@ typedef struct
     int num_fields; // number of fields in the row
 } Row;
 
-typedef struct
-{
-    char **catNames;  // array of strings for row values
-    double *numValue; // number of fields in the row
-    bool is_num;
-    int x_min;
-    int x_max;
-} norm;
+
 
 char **getFieldNames(char *line, int *num_fields)
 {
     int field_no = 0;
     int max_fields = 100;
-    char **field_names = malloc(max_fields * sizeof(char *));
+    char **field_names = malloc(max_fields * sizeof(char*));
     if (!field_names)
     {
         perror("malloc");
@@ -63,7 +63,7 @@ Row readRow(char *line, int number_of_fields)
     row.num_fields = number_of_fields;
     // Allocate initial space for up to 100 fields
 
-    row.values = malloc(number_of_fields * sizeof(char *));
+    row.values = malloc(number_of_fields * sizeof(char*));
     if (!row.values)
     {
         perror("malloc");
@@ -134,6 +134,23 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
 
 // normalization-----------------------------------------------------------------------
 
+typedef struct
+{
+    char **catNames;  // array of strings for row values
+    double *numValue; // number of fields in the row
+    bool is_num;
+    int x_min;
+    int x_max;
+} norm;
+
+typedef struct
+{
+    char **column_values;  
+    int rowcount;
+} preproc_thread_arg;
+
+
+
 #include <ctype.h>
 #include <stdlib.h>
 
@@ -162,13 +179,17 @@ int is_num(const char *str)
     return *endptr == '\0'; // must end exactly
 }
 
-norm normalize_num(char **values, int row_count)
+void *normalize_num(void *arg_ptr)
 {
+    preproc_thread_arg *arg = arg_ptr;
+    char **values = arg->column_values;
+    int row_count = arg->rowcount;
 
-    norm Norm;
-    Norm.is_num = TRUE;
-    Norm.x_max = -__INT32_MAX__;
-    Norm.x_min = __INT32_MAX__;
+    norm *Norm = malloc(sizeof(norm));   // return pointer
+    Norm->is_num = TRUE;
+    Norm->x_max = -__INT32_MAX__;
+    Norm->x_min = __INT32_MAX__;
+    Norm->numValue = malloc(row_count*sizeof(double));
     double value;
     double *values_d = malloc(row_count * sizeof(double));
     if (!values_d)
@@ -176,8 +197,8 @@ norm normalize_num(char **values, int row_count)
         perror("malloc");
         exit(1);
     }
-    Norm.numValue = malloc(row_count * sizeof(double));
-    if (!Norm.numValue)
+    Norm->numValue = malloc(row_count * sizeof(double));
+    if (!Norm->numValue)
     {
         perror("malloc");
         exit(1);
@@ -186,47 +207,45 @@ norm normalize_num(char **values, int row_count)
     {
         sscanf(values[i], "%lf", &value);
         values_d[i] = value;
-        if (value > Norm.x_max)
+        if (value > Norm->x_max)
         {
-            Norm.x_max = value;
+            Norm->x_max = value;
         }
-        else if (value < Norm.x_min)
+         if (value < Norm->x_min)
         {
-            Norm.x_min = value;
+            Norm->x_min = value;
         }
     }
 
     for (int i = 0; i < row_count; i++)
     {
-        double denom = (Norm.x_max - Norm.x_min);
-        if (denom == 0)
-        {
-            Norm.numValue[i] = 0.0;
-        }
-        else
-        {
-            Norm.numValue[i] = (values_d[i] - Norm.x_min) / denom;
-        }
+        double denom = (Norm->x_max - Norm->x_min);
+            Norm->numValue[i] = (values_d[i] - Norm->x_min) / denom;
+        
     }
 
     free(values_d);
-
     return Norm;
+
+   
 }
 
-norm normalize_cat(char **values, int row_count, int num_of_fields)
+void *normalize_cat(void* arg_ptr)
 {
+    preproc_thread_arg *arg = arg_ptr;
+    char **values = arg->column_values;
+    int row_count = arg->rowcount;
 
-    norm Norm;
-    Norm.is_num = FALSE;
-    Norm.catNames = calloc(row_count, sizeof(char *));
-    if (!Norm.catNames)
+    norm *Norm = malloc(sizeof(norm));
+    Norm->is_num = FALSE;
+    Norm->catNames = calloc(row_count, sizeof(char*));
+    Norm->numValue = malloc(row_count * sizeof(double));
+    if (!Norm->catNames)
     {
         perror("malloc");
         exit(1);
     }
-    Norm.numValue = malloc(row_count * sizeof(double));
-    if (!Norm.numValue)
+    if (!Norm->numValue)
     {
         perror("malloc");
         exit(1);
@@ -238,42 +257,42 @@ norm normalize_cat(char **values, int row_count, int num_of_fields)
 
         if (strcmp(values[i], "yes") == 0 || strcmp(values[i], "semi-furnished") == 0) // special rule
         {
-            Norm.numValue[i] = 1;
+            Norm->numValue[i] = 1;
             continue;
         }
         else if (strcmp(values[i], "no") == 0 || strcmp(values[i], "unfurnished") == 0)
         {
-            Norm.numValue[i] = 0;
+            Norm->numValue[i] = 0;
             continue;
         }
         else if (strcmp(values[i], "furnished") == 0)
         {
-            Norm.numValue[i] = 2;
+            Norm->numValue[i] = 2;
             continue;
         }
 
         bool found = FALSE;
         for (int j = 0; j < number_of_cats; j++)
         {
-            if (strcmp(Norm.catNames[j], values[i]) == 0)
+            if (strcmp(Norm->catNames[j], values[i]) == 0)
             {
-                Norm.numValue[i] = j;
+                Norm->numValue[i] = j;
                 found = TRUE;
                 break;
             }
         }
         if (1 - found)
         {
-            Norm.numValue[i] = indexVal;
-            Norm.catNames[indexVal] = strdup(values[i]);
+            Norm->numValue[i] = indexVal;
+            Norm->catNames[indexVal] = strdup(values[i]);
 
             number_of_cats++;
             indexVal++;
         }
     }
-    number_of_cats;
-
     return Norm;
+
+    
 }
 
 norm *getNormTable(int number_of_fields, Row *table, int row_count)
@@ -284,12 +303,14 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count)
         perror("malloc");
         exit(1);
     }
+    pthread_t attribute_threads[PREPOC_THREAD_LIMIT];
+    preproc_thread_arg *args[number_of_fields];
     for (int i = 0; i < number_of_fields; i++)
     {
         norm norm;
         int max = 0;
         int min = __INT_MAX__;
-        char **column_values = malloc(row_count * sizeof(char *));
+        char **column_values = malloc(row_count * sizeof(char*));
         if (!column_values)
         {
             perror("malloc");
@@ -301,18 +322,32 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count)
         }
         bool num_flag = is_num(table[0].values[i]);
 
+        args[i] = malloc(sizeof(preproc_thread_arg));
+        args[i]->rowcount = row_count;
+        args[i]->column_values = column_values;
+        preproc_thread_arg arg = {column_values, row_count};
+
         if (num_flag)
         {
-            norm = normalize_num(column_values, row_count);
+            pthread_create(&(attribute_threads[i]), NULL, normalize_num,(void*)args[i]);
         }
         else
         {
-            norm = normalize_cat(column_values, row_count, number_of_fields);
+            pthread_create(&(attribute_threads[i]), NULL, normalize_cat,(void*)args[i]);
+        }    
+        
+    }
+    for (int i = 0; i < number_of_fields; i++)
+        {
+            norm *result;
+            if (pthread_join(attribute_threads[i], (void**)&result) != 0) { perror("pthread_join"); exit(1); }
+            normalTable[i] = *result;   
+            free(result);
+    
+            free(args[i]->column_values);
+            free(args[i]);
         }
 
-        normalTable[i] = norm;
-        free(column_values);
-    }
     return normalTable;
 }
 //-----------------------------------------------------------------------
