@@ -401,6 +401,36 @@ void freeNormTable(norm *normalTable, int number_of_fields, int row_count)
     }
     free(normalTable);
 }
+
+void freeMatrix(double** matrix, int field_count)
+{
+    for (int i = 0; i < field_count; i++)
+    {
+        free(matrix[i]);
+    }
+    free(matrix);
+}
+//---------------------------------------------------------------------------------
+
+//matrix calculations--------------------------------------------------------------
+
+double** getTansposeMatrix(norm* norm_table, int row_count, int field_count)
+{
+    double **transpose = malloc(field_count * sizeof(double*));
+
+    for (int r = 0; r < field_count; r++)
+        transpose[r] = malloc(row_count * sizeof(double));
+
+    for (int r = 0; r < row_count; r++)
+        for (int c = 0; c < field_count; c++)
+            transpose[c][r] = norm_table[c].numValue[r];   
+
+    return transpose;
+}
+
+
+
+
 //---------------------------------------------------------------------------------
 
 int main()
@@ -417,17 +447,28 @@ int main()
     Row *table = getTable(stream, &row_count, &headers);
 
     norm *normalization_table = getNormTable(table->num_fields, table, row_count);
-
+    double** transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields);
     for (int i = 0; i < row_count; i++)
     {
         for (int j = 0; j < table->num_fields; j++)
         {
-            printf("%s: %s\t  %s: %lf\t", headers[j], table[i].values[j], headers[j], normalization_table[j].numValue[i]);
+            printf(" %lf\t",normalization_table[j].numValue[i]);
+        }
+        printf("\n");
+    }
+    printf("\n \n \n \n");
+    for (int i = 0; i < table->num_fields; i++)
+    {
+        for (int j = 0; j < row_count; j++)
+        {
+            printf(" %lf\t",transpose_matrix[i][j]);
         }
         printf("\n");
     }
 
-    freeNormTable(normalization_table, table->num_fields, row_count);
+    freeNormTable(normalization_table, table->num_fields,row_count);
     freeHeaders(headers, table->num_fields);
+    freeMatrix(transpose_matrix, table->num_fields);
     freeTable(table, row_count);
+    
 }
