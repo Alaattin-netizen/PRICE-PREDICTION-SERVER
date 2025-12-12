@@ -220,8 +220,12 @@ void *normalize_num(void *arg_ptr)
     for (int i = 0; i < row_count; i++)
     {
         double denom = (Norm->x_max - Norm->x_min);
+        if(denom==0){
+         Norm->numValue[i]=0;    
+        }
+        else{
             Norm->numValue[i] = (values_d[i] - Norm->x_min) / denom;
-        
+        }
     }
 
     free(values_d);
@@ -295,9 +299,9 @@ void *normalize_cat(void* arg_ptr)
     
 }
 
-norm *getNormTable(int number_of_fields, Row *table, int row_count)
+norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target_norm)
 {
-    norm *normalTable = malloc(number_of_fields * sizeof(norm));
+    norm *normalTable = malloc((number_of_fields) * sizeof(norm));
     if (!normalTable)
     {
         perror("malloc");
@@ -326,7 +330,6 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count)
         args[i]->rowcount = row_count;
         args[i]->column_values = column_values;
         preproc_thread_arg arg = {column_values, row_count};
-
         if (num_flag)
         {
             pthread_create(&(attribute_threads[i]), NULL, normalize_num,(void*)args[i]);
@@ -334,13 +337,15 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count)
         else
         {
             pthread_create(&(attribute_threads[i]), NULL, normalize_cat,(void*)args[i]);
-        }    
+        }   
         
     }
     for (int i = 0; i < number_of_fields; i++)
         {
             norm *result;
             if (pthread_join(attribute_threads[i], (void**)&result) != 0) { perror("pthread_join"); exit(1); }
+            if (i == number_of_fields - 1) {
+            *target_norm = *result;  }
             normalTable[i] = *result;   
             free(result);
     
@@ -433,24 +438,130 @@ double** getTansposeMatrix(norm* norm_table, int row_count, int field_count)
     return transpose;
 }
 
-double** matrixMultiplication(norm* norm_table, double** trans_matrix, int field_count, int row_count){
+double** matrixMultiplication_nm(norm* norm_table, double** trans_matrix, int field_count, int row_count){
 double** mutliplied_matrix = malloc(sizeof(double*) *  row_count);
 for (int r = 0; r < row_count; r++){
         mutliplied_matrix[r] = calloc(row_count, sizeof(double));
 }
 
-    // if(field_count*row_count*row_count <= COEFF_THREAD_LIMIT){
+    //  if(field_count*row_count*row_count <= COEFF_THREAD_LIMIT){
         for (int r = 0; r < row_count; r++){
             for (int c = 0; c < row_count; c++){
                 for(int k =0; k<field_count; k++)
                 mutliplied_matrix[r][c] += norm_table[k].numValue[r] * trans_matrix[k][c]; 
             }
         }
-    // }
+    //  }
 
 
     return mutliplied_matrix;    
 }
+
+double** matrixMultiplication_mn(double** trans_matrix, norm y_norm, int row_count, int field_count){
+    double** mutliplied_matrix = malloc(sizeof(double*) *  row_count);
+    for (int r = 0; r < row_count; r++){
+            mutliplied_matrix[r] = calloc(1, sizeof(double));
+    }
+    
+        
+            for (int r = 0; r < row_count; r++){
+                    for(int k =0; k<field_count; k++)
+                    mutliplied_matrix[r][0] +=  trans_matrix[r][k] *y_norm.numValue[k]; 
+                }
+            
+        return mutliplied_matrix;    
+    }
+    
+    double** matrixMultiplication_mm(double** m1, double** m2, int m1_row_len, int m1_col_len){
+       
+        double** mutliplied_matrix = malloc(sizeof(double*) * m1_row_len);
+        for (int r = 0; r < m1_row_len; r++){
+                mutliplied_matrix[r] = calloc(m1_row_len, sizeof(double));
+        }
+        
+            
+                for (int r = 0; r < m1_row_len; r++){
+                        for(int c =0; c<m1_row_len; c++){
+                            for(int k=0; k<m1_col_len;k++){
+                        mutliplied_matrix[r][c] +=  m1[r][k]*m2[k][c]; 
+                            }
+                        }
+                    }
+                
+            return mutliplied_matrix;    
+        }
+
+
+        double** matrixInversion(double** matrix_org, int row_count){
+            double** matrix = malloc(sizeof(double*)*row_count);
+            for (int r = 0; r < row_count; r++){
+                matrix[r] = malloc(row_count* sizeof(double));
+                for(int c=0; c<row_count; c++){
+                matrix[r][c] = matrix_org[r][c];
+                }
+            }
+            double** id_matrix =malloc(sizeof(double*)*row_count);
+            for (int r = 0; r < row_count; r++){
+            id_matrix[r] = calloc(row_count, sizeof(double));
+            id_matrix[r][r] = 1;   
+        }
+
+        for (int r = 0; r < row_count; r++){
+
+            if (matrix[r][r] == 0){
+                for (int k = r+1; k < row_count; k++){
+                    if (matrix[k][r] != 0){
+                        double* tmp = matrix[r]; 
+                        matrix[r] = matrix[k];
+                        matrix[k] = tmp;
+    
+                        tmp = id_matrix[r];
+                        id_matrix[r] = id_matrix[k];
+                        id_matrix[k] = tmp;
+                        break;
+                    }
+                }
+            }
+
+            
+            for(int r2 =r+1; r2 <row_count; r2++){
+                
+                double mult = matrix[r2][r] / matrix[r][r];
+                for (int c = 0; c < row_count; c++)
+            {
+            matrix[r2][c] -= matrix[r][c]*mult; 
+            id_matrix[r2][c] -= id_matrix[r][c]*mult;
+            }     
+            }
+        }
+
+        for (int r = row_count-1; r>=0; r--){
+            for(int r2 =r-1; r2>=0; r2--){
+                
+                double mult = matrix[r2][r] / matrix[r][r];
+                for (int c = row_count-1; c>=0; c--)
+            {
+                matrix[r2][c] -= matrix[r][c] * mult;
+                id_matrix[r2][c] -= id_matrix[r][c] * mult;
+                
+            }     
+            }
+        }
+
+        for (int r = 0; r < row_count; r++){
+            double div = matrix[r][r];
+                
+                for (int c = 0; c < row_count; c++)
+            {
+            matrix[r][c] /= div;
+            id_matrix[r][c] /=div;
+            }     
+        }
+
+        return id_matrix;            
+              
+            }
+
 
 
 //---------------------------------------------------------------------------------
@@ -467,10 +578,13 @@ int main()
     char **headers;
     int row_count;
     Row *table = getTable(stream, &row_count, &headers);
-
-    norm *normalization_table = getNormTable(table->num_fields, table, row_count);
+    norm target_norm;
+    norm *normalization_table = getNormTable(table->num_fields, table, row_count, &target_norm);
     double** transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields);
-    double** multiplied_matrix = matrixMultiplication(normalization_table, transpose_matrix, table->num_fields, row_count);
+    double** multiplied_matrix0 = matrixMultiplication_nm(normalization_table, transpose_matrix, table->num_fields, row_count);
+    double** multiplied_matrix1 = matrixMultiplication_mn(transpose_matrix, target_norm, table->num_fields, row_count);
+    double** multiplied_matrix2 = matrixMultiplication_mm(multiplied_matrix0, multiplied_matrix1, row_count, row_count);
+    double** inv_matrix = matrixInversion(multiplied_matrix0, row_count);
     for (int i = 0; i < row_count; i++)
     {
         for (int j = 0; j < table->num_fields; j++)
@@ -488,20 +602,56 @@ int main()
         }
         printf("\n");
     }
-    printf("\n \n \n \n");
+    printf("\n \n \n \n  X*XT \n");
     for (int i = 0; i < row_count; i++)
     {
         for (int j = 0; j < row_count; j++)
         {
-            printf(" %lf\t",multiplied_matrix[i][j]);
+            printf(" %lf\t",multiplied_matrix0[i][j]);
         }
         printf("\n");
     }
 
+    printf("\n \n \n \n  (X*XT)^(-1) \n");
+    for (int i = 0; i < row_count; i++)
+    {
+        for (int j = 0; j < row_count; j++)
+        {
+            printf(" %lf\t",inv_matrix[i][j]);
+        }
+        printf("\n");
+    }
+
+
+    printf("\n \n \n \n  y \n");
+
+    for (int i = 0; i < row_count; i++)
+    {
+            printf(" %lf\t",target_norm.numValue[i]);
+        printf("\n");
+    }
+
+    printf("\n \n \n \n  XT*y \n");
+
+    for (int i = 0; i < row_count; i++)
+    {
+        for (int j = 0; j < row_count; j++)
+        {
+            printf(" %lf\t",multiplied_matrix1[i][j]);
+        }
+        printf("\n");
+    }
+
+
+
+
     freeNormTable(normalization_table, table->num_fields,row_count);
     freeHeaders(headers, table->num_fields);
     freeMatrix(transpose_matrix, table->num_fields);
-    freeMatrix(multiplied_matrix, row_count);
+    freeMatrix(multiplied_matrix0, row_count);
+    freeMatrix(multiplied_matrix1, row_count);
+    freeMatrix(multiplied_matrix2, row_count);
+    freeMatrix(inv_matrix, row_count);
     freeTable(table, row_count);
     
 }
