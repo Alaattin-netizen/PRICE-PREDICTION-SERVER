@@ -410,6 +410,7 @@ void freeMatrix(double** matrix, int field_count)
     }
     free(matrix);
 }
+
 //---------------------------------------------------------------------------------
 
 //matrix calculations--------------------------------------------------------------
@@ -421,14 +422,35 @@ double** getTansposeMatrix(norm* norm_table, int row_count, int field_count)
     for (int r = 0; r < field_count; r++)
         transpose[r] = malloc(row_count * sizeof(double));
 
-    for (int r = 0; r < row_count; r++)
-        for (int c = 0; c < field_count; c++)
+    for (int r = 0; r < row_count; r++){
+
+    
+        for (int c = 0; c < field_count; c++){
             transpose[c][r] = norm_table[c].numValue[r];   
+        }
+    }
 
     return transpose;
 }
 
+double** matrixMultiplication(norm* norm_table, double** trans_matrix, int field_count, int row_count){
+double** mutliplied_matrix = malloc(sizeof(double*) *  row_count);
+for (int r = 0; r < row_count; r++){
+        mutliplied_matrix[r] = calloc(row_count, sizeof(double));
+}
 
+    // if(field_count*row_count*row_count <= COEFF_THREAD_LIMIT){
+        for (int r = 0; r < row_count; r++){
+            for (int c = 0; c < row_count; c++){
+                for(int k =0; k<field_count; k++)
+                mutliplied_matrix[r][c] += norm_table[k].numValue[r] * trans_matrix[k][c]; 
+            }
+        }
+    // }
+
+
+    return mutliplied_matrix;    
+}
 
 
 //---------------------------------------------------------------------------------
@@ -448,6 +470,7 @@ int main()
 
     norm *normalization_table = getNormTable(table->num_fields, table, row_count);
     double** transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields);
+    double** multiplied_matrix = matrixMultiplication(normalization_table, transpose_matrix, table->num_fields, row_count);
     for (int i = 0; i < row_count; i++)
     {
         for (int j = 0; j < table->num_fields; j++)
@@ -465,10 +488,20 @@ int main()
         }
         printf("\n");
     }
+    printf("\n \n \n \n");
+    for (int i = 0; i < row_count; i++)
+    {
+        for (int j = 0; j < row_count; j++)
+        {
+            printf(" %lf\t",multiplied_matrix[i][j]);
+        }
+        printf("\n");
+    }
 
     freeNormTable(normalization_table, table->num_fields,row_count);
     freeHeaders(headers, table->num_fields);
     freeMatrix(transpose_matrix, table->num_fields);
+    freeMatrix(multiplied_matrix, row_count);
     freeTable(table, row_count);
     
 }
