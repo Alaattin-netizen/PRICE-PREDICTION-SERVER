@@ -3,12 +3,13 @@
 #include <string.h>
 #include <ctype.h> // might have to delete these
 #include <pthread.h>
+#include <math.h>
 
 #define bool int
 #define TRUE 1
 #define FALSE 0
 
-#define  PORT_NUMBER 60000
+#define PORT_NUMBER 60000
 #define MAX_SAMPLES 10000
 #define MAX_FEATURES 100
 #define STRING_BUFFER_LIMIT 100
@@ -22,13 +23,12 @@ typedef struct
     int num_fields; // number of fields in the row
 } Row;
 
-
-
 char **getFieldNames(char *line, int *num_fields)
 {
+
     int field_no = 0;
-    int max_fields = 100;
-    char **field_names = malloc(max_fields * sizeof(char*));
+    int max_fields = MAX_FEATURES;
+    char **field_names = malloc(max_fields * sizeof(char *));
     if (!field_names)
     {
         perror("malloc");
@@ -50,7 +50,7 @@ char **getFieldNames(char *line, int *num_fields)
         token = strtok(NULL, ",\n");
     }
 
-    *num_fields = field_no; // store number of fields
+    *num_fields = field_no;
 
     return field_names;
 }
@@ -61,9 +61,8 @@ Row readRow(char *line, int number_of_fields)
     Row row;
     int field_no = 0;
     row.num_fields = number_of_fields;
-    // Allocate initial space for up to 100 fields
 
-    row.values = malloc(number_of_fields * sizeof(char*));
+    row.values = malloc(number_of_fields * sizeof(char *));
     if (!row.values)
     {
         perror("malloc");
@@ -82,11 +81,7 @@ Row readRow(char *line, int number_of_fields)
     if (field_no != number_of_fields)
     {
 
-        // Fill missing fields with empty strings to avoid garbage
-        for (int k = field_no; k < number_of_fields; ++k)
-        {
-            row.values[k] = strdup("");
-        }
+        //what are we supposed to do with missing values?
     }
 
     return row;
@@ -94,11 +89,12 @@ Row readRow(char *line, int number_of_fields)
 
 Row *getTable(FILE *stream, int *row_count, char ***headers)
 {
-    char line[1024];
+
+    char line[1024];//is this supposed to be the string buffer limit or is that supposed to be for single values?
     int number_of_fields = 0;
     *row_count = 0;
 
-    int capacity = 100; // initial row capacity
+    int capacity = MAX_SAMPLES;
     Row *table = malloc(capacity * sizeof(Row));
     if (!table)
     {
@@ -110,14 +106,15 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
     {
         line[strcspn(line, "\r\n")] = 0;
 
-        *headers = getFieldNames(line, &number_of_fields);
+        *headers = getFieldNames(line, &number_of_fields); //the first row is attribute names
+        //we need to pass number of fields' addres so we can manipulate it
     }
 
     while (fgets(line, sizeof(line), stream))
     {
         line[strcspn(line, "\r\n")] = 0;
 
-        Row row = readRow(line, number_of_fields);
+        Row row = readRow(line, number_of_fields); //get each row from the table
 
         if (*row_count >= capacity)
         {
@@ -136,20 +133,18 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
 
 typedef struct
 {
-    char **catNames;  // array of strings for row values
-    double *numValue; // number of fields in the row
+    char **catNames;  // array of strings for the unnormalized values of categorical attributes
+    double *numValue; // array of normalized values for an attribute
     bool is_num;
     int x_min;
     int x_max;
 } norm;
 
-typedef struct
-{
-    char **column_values;  
-    int rowcount;
+typedef struct //this is necessary for multithreadding
+{                   
+    char **column_values;
+    int rowcount; 
 } preproc_thread_arg;
-
-
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -167,7 +162,7 @@ int is_num(const char *str)
         return 0; // empty or only spaces
 
     char *endptr;
-    strtod(str, &endptr);
+    strtod(str, &endptr); //convert the string into a double. If the values are the same its not numeric.
 
     if (endptr == str)
         return 0; // no conversion happened
@@ -181,15 +176,15 @@ int is_num(const char *str)
 
 void *normalize_num(void *arg_ptr)
 {
-    preproc_thread_arg *arg = arg_ptr;
+    preproc_thread_arg *arg = arg_ptr; //struct for thread arguments
     char **values = arg->column_values;
     int row_count = arg->rowcount;
 
-    norm *Norm = malloc(sizeof(norm));   // return pointer
+    norm *Norm = malloc(sizeof(norm)); 
     Norm->is_num = TRUE;
     Norm->x_max = -__INT32_MAX__;
     Norm->x_min = __INT32_MAX__;
-    Norm->numValue = malloc(row_count*sizeof(double));
+    Norm->numValue = malloc(row_count * sizeof(double));
     double value;
     double *values_d = malloc(row_count * sizeof(double));
     if (!values_d)
@@ -197,21 +192,22 @@ void *normalize_num(void *arg_ptr)
         perror("malloc");
         exit(1);
     }
-    Norm->numValue = malloc(row_count * sizeof(double));
+
     if (!Norm->numValue)
     {
         perror("malloc");
         exit(1);
     }
+    
     for (int i = 0; i < row_count; i++)
     {
         sscanf(values[i], "%lf", &value);
         values_d[i] = value;
-        if (value > Norm->x_max)
+        if (value > Norm->x_max) //check min-max
         {
             Norm->x_max = value;
         }
-         if (value < Norm->x_min)
+        if (value < Norm->x_min)
         {
             Norm->x_min = value;
         }
@@ -220,29 +216,29 @@ void *normalize_num(void *arg_ptr)
     for (int i = 0; i < row_count; i++)
     {
         double denom = (Norm->x_max - Norm->x_min);
-        if(denom==0){
-         Norm->numValue[i]=0;    
+        if (denom == 0) // if x_min = x_max
+        {
+            Norm->numValue[i] = 0; // Just give 0 to all ofthem Idk what else to do
         }
-        else{
-            Norm->numValue[i] = (values_d[i] - Norm->x_min) / denom;
+        else
+        {
+            Norm->numValue[i] = (values_d[i] - Norm->x_min) / denom; //min-max normalization
         }
     }
 
     free(values_d);
     return Norm;
-
-   
 }
 
-void *normalize_cat(void* arg_ptr)
+void *normalize_cat(void *arg_ptr)
 {
-    preproc_thread_arg *arg = arg_ptr;
+    preproc_thread_arg *arg = arg_ptr;//arguments for mulitethreading
     char **values = arg->column_values;
     int row_count = arg->rowcount;
 
     norm *Norm = malloc(sizeof(norm));
     Norm->is_num = FALSE;
-    Norm->catNames = calloc(row_count, sizeof(char*));
+    Norm->catNames = calloc(row_count, sizeof(char *));
     Norm->numValue = malloc(row_count * sizeof(double));
     if (!Norm->catNames)
     {
@@ -276,16 +272,16 @@ void *normalize_cat(void* arg_ptr)
         }
 
         bool found = FALSE;
-        for (int j = 0; j < number_of_cats; j++)
+        for (int j = 0; j < number_of_cats; j++) 
         {
-            if (strcmp(Norm->catNames[j], values[i]) == 0)
+            if (strcmp(Norm->catNames[j], values[i]) == 0) //if the value was already encountered
             {
                 Norm->numValue[i] = j;
                 found = TRUE;
                 break;
             }
         }
-        if (1 - found)
+        if (1 - found) //if there is no special rules for the values just number them according to the order they come
         {
             Norm->numValue[i] = indexVal;
             Norm->catNames[indexVal] = strdup(values[i]);
@@ -295,11 +291,9 @@ void *normalize_cat(void* arg_ptr)
         }
     }
     return Norm;
-
-    
 }
 
-norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target_norm)
+norm *getNormTable(int number_of_fields, Row *table, int row_count, norm **target_norm)
 {
     norm *normalTable = malloc((number_of_fields) * sizeof(norm));
     if (!normalTable)
@@ -307,19 +301,26 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target
         perror("malloc");
         exit(1);
     }
+    normalTable[0].is_num = TRUE;
+normalTable[0].numValue = malloc(row_count * sizeof(double));
+if (!normalTable[0].numValue) {
+    perror("malloc");
+    exit(1);
+}
+
+for (int i = 0; i < row_count; i++) {
+    normalTable[0].numValue[i] = 1.0;
+}
+
     pthread_t attribute_threads[PREPOC_THREAD_LIMIT];
     preproc_thread_arg *args[number_of_fields];
-    for (int i = 0; i < number_of_fields; i++)
+    for (int i = 0; i < number_of_fields; i++) //multithreading babyyyy
     {
         norm norm;
         int max = 0;
         int min = __INT_MAX__;
-        char **column_values = malloc(row_count * sizeof(char*));
-        if (!column_values)
-        {
-            perror("malloc");
-            exit(1);
-        }
+        char **column_values = malloc(row_count * sizeof(char *)); //gotta iterate over the attributes so roll down the table
+        //there is probably a more efficient way to do this
         for (int row = 0; row < row_count; row++)
         {
             column_values[row] = table[row].values[i];
@@ -330,37 +331,53 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target
         args[i]->rowcount = row_count;
         args[i]->column_values = column_values;
         preproc_thread_arg arg = {column_values, row_count};
-        if (num_flag)
+        if (num_flag) //chec if the attribute is numerical
         {
-            pthread_create(&(attribute_threads[i]), NULL, normalize_num,(void*)args[i]);
+            pthread_create(&(attribute_threads[i]), NULL, normalize_num, (void *)args[i]);
         }
         else
         {
-            pthread_create(&(attribute_threads[i]), NULL, normalize_cat,(void*)args[i]);
-        }   
-        
+            pthread_create(&(attribute_threads[i]), NULL, normalize_cat, (void *)args[i]);
+        }
     }
     for (int i = 0; i < number_of_fields; i++)
+    {
+        norm *result;
+        if (pthread_join(attribute_threads[i], (void **)&result) != 0) //pthread_create returns wheter the create was actually created
+        //we write the actual values into the result variable.
         {
-            norm *result;
-            if (pthread_join(attribute_threads[i], (void**)&result) != 0) { perror("pthread_join"); exit(1); }
-            if (i == number_of_fields - 1) {
-            *target_norm = *result;  }
-            normalTable[i] = *result;   
-            free(result);
-    
-            free(args[i]->column_values);
-            free(args[i]);
+            perror("pthread_join");
+            exit(1);
         }
 
+        if (i == number_of_fields - 1)
+        {
+            *target_norm = result;  // assign the actual norm pointer
+        }
+        else
+        {
+            normalTable[i+1] = *result;
+            free(result);  // free the struct contents carefully later
+        }
+        
+
+        free(args[i]->column_values);
+        free(args[i]);
+    }
+
+    fflush(stdout);
     return normalTable;
 }
 //-----------------------------------------------------------------------
 
 // garbage collection------------------------------------------------------
-void freeTable(Row *table, int row_count)
+
+//this sections is made up of free functions for our various matrices.
+//Since some of them are 2 dimensionall arrays (i.e. pointers of pointers)
+//and others structs that have arrays in them, we can't just free them with the free() function.
+void freeTable(Row *table, int major_index)
 {
-    for (int r = 0; r < row_count; r++)
+    for (int r = 0; r < major_index; r++)
     {
         for (int c = 0; c < table[r].num_fields; c++)
         {
@@ -371,24 +388,25 @@ void freeTable(Row *table, int row_count)
     free(table);
 }
 
-void freeHeaders(char **headers, int num_fields)
+void freeHeaders(char **headers, int index)
 {
-    for (int i = 0; i < num_fields; i++)
+    for (int i = 0; i < index; i++)
     {
         free(headers[i]);
     }
     free(headers);
 }
 
-void freeNorm(norm *n, int row_count)
+void freeNorm(norm *n, int index)
 {
+
     if (n->is_num)
     {
         free(n->numValue);
     }
     else
     {
-        for (int i = 0; i < row_count; i++)
+        for (int i = 0; i < index; i++)
         {
             if (n->catNames[i])
                 free(n->catNames[i]);
@@ -398,18 +416,19 @@ void freeNorm(norm *n, int row_count)
     }
 }
 
-void freeNormTable(norm *normalTable, int number_of_fields, int row_count)
+void freeNormTable(norm *normalTable, int major_index, int index)
 {
-    for (int i = 0; i < number_of_fields; i++)
+
+    for (int i = 0; i < major_index; i++)
     {
-        freeNorm(&normalTable[i], row_count);
+        freeNorm(&normalTable[i], index);
     }
     free(normalTable);
 }
 
-void freeMatrix(double** matrix, int field_count)
+void freeMatrix(double **matrix, int major_index)
 {
-    for (int i = 0; i < field_count; i++)
+    for (int i = 0; i < major_index; i++)
     {
         free(matrix[i]);
     }
@@ -418,157 +437,192 @@ void freeMatrix(double** matrix, int field_count)
 
 //---------------------------------------------------------------------------------
 
-//matrix calculations--------------------------------------------------------------
+// matrix calculations--------------------------------------------------------------
 
-double** getTansposeMatrix(norm* norm_table, int row_count, int field_count)
+//created 3 different matrix multipllications so that we didn't need to just turn all of them into 2d double arrays
+//it wasn't worth it
+//they all work the same way, iterate over the rows annd columns and summ all of them and put them in their place in the new matrix yada yada
+
+double **getTansposeMatrix(norm *norm_table, int row_count, int field_count)
 {
-    double **transpose = malloc(field_count * sizeof(double*));
+    double **transpose = malloc(field_count * sizeof(double *));
 
     for (int r = 0; r < field_count; r++)
         transpose[r] = malloc(row_count * sizeof(double));
 
-    for (int r = 0; r < row_count; r++){
+    for (int r = 0; r < row_count; r++)
+    {
 
-    
-        for (int c = 0; c < field_count; c++){
-            transpose[c][r] = norm_table[c].numValue[r];   
+        for (int c = 0; c < field_count; c++)
+        {
+            transpose[c][r] = norm_table[c].numValue[r];
         }
     }
 
     return transpose;
 }
 
-double** matrixMultiplication_nm(norm* norm_table, double** trans_matrix, int field_count, int row_count){
-double** mutliplied_matrix = malloc(sizeof(double*) *  row_count);
-for (int r = 0; r < row_count; r++){
-        mutliplied_matrix[r] = calloc(row_count, sizeof(double));
-}
+double **matrixMultiplication_nm(double **trans_matrix, norm *norm_table, int field_count, int row_count)
+{
+    double **mutliplied_matrix = malloc(sizeof(double *) * field_count);
+    for (int r = 0; r < field_count; r++)
+    {
+        mutliplied_matrix[r] = calloc(field_count, sizeof(double));
+    }
 
     //  if(field_count*row_count*row_count <= COEFF_THREAD_LIMIT){
-        for (int r = 0; r < row_count; r++){
-            for (int c = 0; c < row_count; c++){
-                for(int k =0; k<field_count; k++)
-                mutliplied_matrix[r][c] += norm_table[k].numValue[r] * trans_matrix[k][c]; 
-            }
+    for (int r = 0; r < field_count; r++)
+    {
+        for (int c = 0; c < field_count; c++)
+        {
+            for (int k = 0; k < row_count; k++)
+                mutliplied_matrix[r][c] += trans_matrix[r][k] * norm_table[c].numValue[k];
         }
+    }
     //  }
 
-
-    return mutliplied_matrix;    
+    return mutliplied_matrix;
 }
 
-double** matrixMultiplication_mn(double** trans_matrix, norm y_norm, int row_count, int field_count){
-    double** mutliplied_matrix = malloc(sizeof(double*) *  row_count);
-    for (int r = 0; r < row_count; r++){
-            mutliplied_matrix[r] = calloc(1, sizeof(double));
+double **matrixMultiplication_mn(double **matrix, norm *y_norm, int rows, int cols)
+{
+    double **result = malloc(rows * sizeof(double *));
+    if (!result)
+    {
+        perror("malloc");
+        exit(1);
     }
-    
-        
-            for (int r = 0; r < row_count; r++){
-                    for(int k =0; k<field_count; k++)
-                    mutliplied_matrix[r][0] +=  trans_matrix[r][k] *y_norm.numValue[k]; 
-                }
-            
-        return mutliplied_matrix;    
+    for (int i = 0; i < rows; i++)
+    {
+        result[i] = calloc(1, sizeof(double));
+        if (!result[i])
+        {
+            perror("calloc");
+            exit(1);
+        }
     }
-    
-    double** matrixMultiplication_mm(double** m1, double** m2, int m1_row_len, int m1_col_len){
-       
-        double** mutliplied_matrix = malloc(sizeof(double*) * m1_row_len);
-        for (int r = 0; r < m1_row_len; r++){
-                mutliplied_matrix[r] = calloc(m1_row_len, sizeof(double));
+    for (int i = 0; i < rows; i++)
+    {
+        for (int j = 0; j < cols; j++)
+        {
+            result[i][0] += matrix[i][j] * y_norm->numValue[j];
         }
-        
-            
-                for (int r = 0; r < m1_row_len; r++){
-                        for(int c =0; c<m1_row_len; c++){
-                            for(int k=0; k<m1_col_len;k++){
-                        mutliplied_matrix[r][c] +=  m1[r][k]*m2[k][c]; 
-                            }
-                        }
-                    }
-                
-            return mutliplied_matrix;    
-        }
+    }
+    return result;
+}
 
+double **matrixMultiplication_mm(double **M1, double **M2, int M1_rows, int M1_cols, int M2_cols)
+{
 
-        double** matrixInversion(double** matrix_org, int row_count){
-            double** matrix = malloc(sizeof(double*)*row_count);
-            for (int r = 0; r < row_count; r++){
-                matrix[r] = malloc(row_count* sizeof(double));
-                for(int c=0; c<row_count; c++){
-                matrix[r][c] = matrix_org[r][c];
-                }
-            }
-            double** id_matrix =malloc(sizeof(double*)*row_count);
-            for (int r = 0; r < row_count; r++){
-            id_matrix[r] = calloc(row_count, sizeof(double));
-            id_matrix[r][r] = 1;   
-        }
-
-        for (int r = 0; r < row_count; r++){
-
-            if (matrix[r][r] == 0){
-                for (int k = r+1; k < row_count; k++){
-                    if (matrix[k][r] != 0){
-                        double* tmp = matrix[r]; 
-                        matrix[r] = matrix[k];
-                        matrix[k] = tmp;
-    
-                        tmp = id_matrix[r];
-                        id_matrix[r] = id_matrix[k];
-                        id_matrix[k] = tmp;
-                        break;
-                    }
-                }
-            }
-
-            
-            for(int r2 =r+1; r2 <row_count; r2++){
-                
-                double mult = matrix[r2][r] / matrix[r][r];
-                for (int c = 0; c < row_count; c++)
+    double **C = malloc(M1_rows * sizeof(double *));
+    for (int i = 0; i < M1_rows; i++)
+        C[i] = calloc(M2_cols, sizeof(double));
+  
+  
+    for (int i = 0; i < M1_rows; i++)
+    {
+        for (int j = 0; j < M2_cols; j++)
+        {
+            for (int k = 0; k < M1_cols; k++)
             {
-            matrix[r2][c] -= matrix[r][c]*mult; 
-            id_matrix[r2][c] -= id_matrix[r][c]*mult;
-            }     
+                C[i][j] += M1[i][k] * M2[k][j];
             }
         }
+    }
+    return C;
+}
 
-        for (int r = row_count-1; r>=0; r--){
-            for(int r2 =r-1; r2>=0; r2--){
-                
-                double mult = matrix[r2][r] / matrix[r][r];
-                for (int c = row_count-1; c>=0; c--)
+double **matrixInversion(double **matrix_org, int field_count) 
+{
+
+    double **matrix = malloc(sizeof(double *) * field_count);//had to crate a clone matrix so the original one didnt get corrupted
+    for (int r = 0; r < field_count; r++)
+    {
+        matrix[r] = malloc(field_count * sizeof(double));
+        for (int c = 0; c < field_count; c++)
+        {
+            matrix[r][c] = matrix_org[r][c];
+        }
+    }
+    double **id_matrix = malloc(sizeof(double *) * field_count);
+    for (int r = 0; r < field_count; r++)
+    {
+        id_matrix[r] = calloc(field_count, sizeof(double)); //create identity matrix
+        id_matrix[r][r] = 1; 
+    }
+
+    // Using gaussian elemination.
+    for (int r = 0; r < field_count; r++)
+    {
+        bool invertable = (matrix[r][r] != 0);
+
+        if (1-invertable)
+        {
+            for (int k = r + 1; k < field_count; k++)
+            {
+                if (matrix[k][r] != 0)
+                {
+                    invertable=TRUE;
+                    double *tmp = matrix[r];
+                    matrix[r] = matrix[k];
+                    matrix[k] = tmp;
+
+                    tmp = id_matrix[r];
+                    id_matrix[r] = id_matrix[k];
+                    id_matrix[k] = tmp;
+                    break;
+                }
+            }
+        }
+        if(1-invertable){
+            fprintf(stderr, "Matrix is singular or nearly singular!\n");
+            exit(1);
+        }
+        for (int r2 = r + 1; r2 < field_count; r2++)
+        {
+            double mult = matrix[r2][r] / matrix[r][r];
+            for (int c = 0; c < field_count; c++)
             {
                 matrix[r2][c] -= matrix[r][c] * mult;
                 id_matrix[r2][c] -= id_matrix[r][c] * mult;
-                
-            }     
             }
         }
+    }
 
-        for (int r = 0; r < row_count; r++){
-            double div = matrix[r][r];
-                
-                for (int c = 0; c < row_count; c++)
+    // Back substitution
+    for (int r = field_count - 1; r >= 0; r--)
+    {
+        for (int r2 = r - 1; r2 >= 0; r2--)
+        {
+            double mult = matrix[r2][r] / matrix[r][r];
+            for (int c = field_count - 1; c >= 0; c--)
             {
-            matrix[r][c] /= div;
-            id_matrix[r][c] /=div;
-            }     
-        }
-
-        return id_matrix;            
-              
+                matrix[r2][c] -= matrix[r][c] * mult;
+                id_matrix[r2][c] -= id_matrix[r][c] * mult;
             }
+        }
+    }
 
+    // Divide rows by pivot
+    for (int r = 0; r < field_count; r++)
+    {
+        double div = matrix[r][r];
+        for (int c = 0; c < field_count; c++)
+        {
+            matrix[r][c] /= div;
+            id_matrix[r][c] /= div;
+        }
+    }
 
+    return id_matrix;
+}
 
 //---------------------------------------------------------------------------------
 
 int main()
 {
-    FILE *stream = fopen("Housing.csv", "r");
+
+    FILE *stream = fopen("Housing.csv", "r"); //read the file
     if (!stream)
     {
         perror("fopen");
@@ -577,81 +631,99 @@ int main()
 
     char **headers;
     int row_count;
-    Row *table = getTable(stream, &row_count, &headers);
-    norm target_norm;
+    // we need to pass the adresses of row_count and headers so we can manipulate them inside the functi0n
+    //since c does not support returning more than one value this is necessary
+    Row *table = getTable(stream, &row_count, &headers); 
+    norm *target_norm;
+
     norm *normalization_table = getNormTable(table->num_fields, table, row_count, &target_norm);
-    double** transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields);
-    double** multiplied_matrix0 = matrixMultiplication_nm(normalization_table, transpose_matrix, table->num_fields, row_count);
-    double** multiplied_matrix1 = matrixMultiplication_mn(transpose_matrix, target_norm, table->num_fields, row_count);
-    double** multiplied_matrix2 = matrixMultiplication_mm(multiplied_matrix0, multiplied_matrix1, row_count, row_count);
-    double** inv_matrix = matrixInversion(multiplied_matrix0, row_count);
+    double **transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields );
+    double **XTX = matrixMultiplication_nm(transpose_matrix, normalization_table, table->num_fields, row_count);
+    double **inv_matrix = matrixInversion(XTX, table->num_fields);
+
+    double **XTX_iXT =
+        matrixMultiplication_mm(inv_matrix, transpose_matrix,
+                                table->num_fields, // rows of inv_matrix
+                                table->num_fields, // cols of inv_matrix = rows of XT
+                                row_count);        // cols of XT
+
+    double **coefficients = matrixMultiplication_mn(XTX_iXT, target_norm, table->num_fields, row_count);
+    printf("\n \n \n \n  X \n");
+
     for (int i = 0; i < row_count; i++)
     {
         for (int j = 0; j < table->num_fields; j++)
         {
-            printf(" %lf\t",normalization_table[j].numValue[i]);
+            printf(" %lf\t", normalization_table[j].numValue[i]);
         }
         printf("\n");
     }
-    printf("\n \n \n \n");
+    printf("\n \n  \n \n XT \n");
     for (int i = 0; i < table->num_fields; i++)
     {
         for (int j = 0; j < row_count; j++)
         {
-            printf(" %lf\t",transpose_matrix[i][j]);
+            printf(" %lf\t", transpose_matrix[i][j]);
         }
         printf("\n");
     }
-    printf("\n \n \n \n  X*XT \n");
-    for (int i = 0; i < row_count; i++)
+    printf("\n \n \n \n  XT*X \n");
+    for (int i = 0; i < table->num_fields; i++)
     {
-        for (int j = 0; j < row_count; j++)
+        for (int j = 0; j < table->num_fields; j++)
         {
-            printf(" %lf\t",multiplied_matrix0[i][j]);
+            printf(" %lf\t", XTX[i][j]);
         }
         printf("\n");
     }
 
-    printf("\n \n \n \n  (X*XT)^(-1) \n");
-    for (int i = 0; i < row_count; i++)
+    printf("\n \n \n \n  (XT*X)^(-1) \n");
+    for (int i = 0; i < table->num_fields; i++)
     {
-        for (int j = 0; j < row_count; j++)
+        for (int j = 0; j < table->num_fields; j++)
         {
-            printf(" %lf\t",inv_matrix[i][j]);
+            printf(" %lf\t", inv_matrix[i][j]);
         }
         printf("\n");
     }
-
 
     printf("\n \n \n \n  y \n");
 
     for (int i = 0; i < row_count; i++)
     {
-            printf(" %lf\t",target_norm.numValue[i]);
+        printf(" %lf\t", target_norm->numValue[i]);
         printf("\n");
     }
 
-    printf("\n \n \n \n  XT*y \n");
+    printf("\n \n \n \n  (XTX)^(-1)*XT \n");
 
-    for (int i = 0; i < row_count; i++)
-    {
+    for (int i = 0; i < table->num_fields; i++)
+    { // rows = field_count
         for (int j = 0; j < row_count; j++)
-        {
-            printf(" %lf\t",multiplied_matrix1[i][j]);
+        { // cols = row_count
+            printf(" %lf\t", XTX_iXT[i][j]);
         }
         printf("\n");
     }
 
+    printf("\n \n \n \n  (XTX)^(-1)*XT*y \n");
+    double sum =0;
+    for (int i = 0; i < table->num_fields; i++)
+    {
 
+        printf(" %lf\t", coefficients[i][0]);
+        sum+=coefficients[i][0];
+        printf("\n");
+    }
+    printf("%lf \n", sum);
 
-
-    freeNormTable(normalization_table, table->num_fields,row_count);
+    freeNormTable(normalization_table, table->num_fields, row_count);
     freeHeaders(headers, table->num_fields);
+    freeNorm(target_norm, row_count);
     freeMatrix(transpose_matrix, table->num_fields);
-    freeMatrix(multiplied_matrix0, row_count);
-    freeMatrix(multiplied_matrix1, row_count);
-    freeMatrix(multiplied_matrix2, row_count);
-    freeMatrix(inv_matrix, row_count);
+    freeMatrix(XTX, table->num_fields);
+    freeMatrix(coefficients, table->num_fields);
+    freeMatrix(XTX_iXT, table->num_fields);
+    freeMatrix(inv_matrix, table->num_fields);
     freeTable(table, row_count);
-    
 }
