@@ -29,6 +29,7 @@
 #define PREPOC_THREAD_LIMIT 128
 #define COEFF_THREAD_LIMIT 128
 #define PORT 60000
+#define MAX_LINE_LENGTH 1024 //this wasn't in the pdf file but I thought handling it this way would be propper
 
 // Global Variables
 int socket_desc, client_fd;
@@ -115,8 +116,7 @@ Row readRow(char *line, int number_of_fields) {
 
 // Get table from CSV file
 Row *getTable(FILE *stream, int *row_count, char ***headers) {
-  char line[1024]; // is this supposed to be the string buffer limit or is that
-                   // supposed to be for single values?
+  char line[MAX_LINE_LENGTH];
   int number_of_fields = 0;
   *row_count = 0;
 
@@ -356,7 +356,9 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count,
   for (int i = 0; i < row_count; i++) {
     normalTable[0].numValue[i] = 1.0;
   }
-
+  if(PREPOC_THREAD_LIMIT<number_of_fields){
+    exit_c("THERE ARE MORE FIELDS THAN MAXIMUM NUMBER OF THREADS THAT CAN BE GENERATED");
+  }
   pthread_t attribute_threads[PREPOC_THREAD_LIMIT];
   preproc_thread_arg *args[number_of_fields];
   for (int i = 0; i < number_of_fields; i++) // multithreading babyyyy
