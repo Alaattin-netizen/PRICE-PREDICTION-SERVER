@@ -1,33 +1,48 @@
+// Must compile with the given flags
+// gcc GROUP_41_2023510195_2023510211.c -o output -lm
+//
+// -lm is required for math functions (only used for ceil function)
+
 #include <arpa/inet.h> // for inet_addr
 #include <ctype.h>     // might have to delete these
+#include <ctype.h>
 #include <math.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <semaphore.h>
 
+// We didnt want to always use 1/0 this is the same but better to read
 #define bool int
 #define TRUE 1
 #define FALSE 0
 
+// Configurations
 #define MAX_SAMPLES 10000
 #define MAX_FEATURES 100
 #define STRING_BUFFER_LIMIT 100
 #define PREPOC_THREAD_LIMIT 128
 #define COEFF_THREAD_LIMIT 128
+#define PORT 60000
 
-// Port-----------------------------------------------------------------------------
-#include <arpa/inet.h> // for inet_addr
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#define port_no 60000
+// Global Variables
 int socket_desc, client_fd;
+sem_t mutex;
+sem_t turnstile1;
+sem_t turnstile2;
+int barrier_count = 0;
+int barrier_N = 0;
 
 //---------------------------------------------------------------------------------
 
 // exit--------------------------------------------------------------------------
+//
+// Exit with error message (also clear messages)
 void exit_c(char *e) {
   char msgbuf[STRING_BUFFER_LIMIT];
   snprintf(msgbuf, sizeof(msgbuf), "\n\nERROR: %s \n", e);
@@ -47,8 +62,8 @@ typedef struct {
   int num_fields; // number of fields in the row
 } Row;
 
+// Get field names from CSV header row
 char **getFieldNames(char *line, int *num_fields) {
-
   int field_no = 0;
   int max_fields = MAX_FEATURES;
   char **field_names = malloc(max_fields * sizeof(char *));
@@ -76,6 +91,7 @@ char **getFieldNames(char *line, int *num_fields) {
   return field_names;
 }
 
+// Read a row from CSV file
 Row readRow(char *line, int number_of_fields) {
   Row row;
   int field_no = 0;
@@ -97,6 +113,7 @@ Row readRow(char *line, int number_of_fields) {
   return row;
 }
 
+// Get table from CSV file
 Row *getTable(FILE *stream, int *row_count, char ***headers) {
   char line[1024]; // is this supposed to be the string buffer limit or is that
                    // supposed to be for single values?
@@ -155,9 +172,7 @@ typedef struct // this is necessary for multithreadding
   char *col_name;
 } preproc_thread_arg;
 
-#include <ctype.h>
-#include <stdlib.h>
-
+// Check if a string is numeric
 int is_num(const char *str) {
   if (!str)
     return 0;
@@ -183,6 +198,7 @@ int is_num(const char *str) {
   return *endptr == '\0'; // must end exactly
 }
 
+// Normalize numeric values in a column
 void *normalize_num(void *arg_ptr) {
   preproc_thread_arg *arg = arg_ptr; // struct for thread arguments
   char **values = arg->column_values;
@@ -237,6 +253,7 @@ void *normalize_num(void *arg_ptr) {
   return Norm;
 }
 
+// Normalize categorical values to a numeric scale
 void *normalize_cat(void *arg_ptr) {
   preproc_thread_arg *arg = arg_ptr; // arguments for mulitethreading
   char **values = arg->column_values;
@@ -323,6 +340,7 @@ void *normalize_cat(void *arg_ptr) {
   return Norm;
 }
 
+// Calculate the normalized table from the given table
 norm *getNormTable(int number_of_fields, Row *table, int row_count,
                    norm *target_norm, int client_fd, char **headers) {
   norm *normalTable = malloc((number_of_fields) * sizeof(norm));
@@ -457,14 +475,7 @@ void freeNormTable(norm *normalTable, int major_index, int index) {
 
 //---------------------------------------------------------------------------------
 
-// matrix
-// calculations--------------------------------------------------------------
-
-// created 3 different matrix multipllications so that we didn't need to just
-// turn all of them into 2d double arrays it wasn't worth it they all work the
-// same way, iterate over the rows annd columns and summ all of them and put
-// them in their place in the new matrix yada yada
-#include <semaphore.h>
+// matrix calculations--------------------------------------------------------------
 typedef struct Matrix {
   double **data;
   int rows;
@@ -476,10 +487,8 @@ typedef struct {
   int id;
   int n;
 } ElimTask;
-static sem_t mutex;
-static sem_t turnstile1;
-static sem_t turnstile2;
 
+// Creates a matrix with 0 on all values
 Matrix *createMatrix(int rows, int cols) {
   Matrix *matrix = malloc(sizeof(struct Matrix));
   matrix->data = malloc(rows * sizeof(double *));
@@ -492,6 +501,7 @@ Matrix *createMatrix(int rows, int cols) {
   return matrix;
 }
 
+// To free a matrix
 void matrix_free(Matrix *m) {
   if (!m)
     return;
@@ -501,9 +511,7 @@ void matrix_free(Matrix *m) {
   free(m);
 }
 
-static int barrier_count = 0;
-static int barrier_N = 0;
-
+// Switches between the turnstiles depending on the barrier count
 void barrier_wait() {
   sem_wait(&mutex);
   barrier_count++;
@@ -528,6 +536,7 @@ void barrier_wait() {
   sem_post(&turnstile2);
 }
 
+// This is used for solving the linear system, this is a thread function
 void *eliminate_row(void *arg) {
   ElimTask *t = (ElimTask *)arg;
 
@@ -554,6 +563,7 @@ void *eliminate_row(void *arg) {
   return NULL;
 }
 
+// For the given a matrices, solves Ax = B (x = beta coefficients)
 Matrix *solveLinearSystem(Matrix *A, Matrix *B) {
   int n = A->rows;
 
@@ -606,6 +616,7 @@ Matrix *solveLinearSystem(Matrix *A, Matrix *B) {
   for (int i = 0; i < n; i++)
     pthread_join(threads[i], NULL);
 
+  // Clear the semaphores
   sem_destroy(&mutex);
   sem_destroy(&turnstile1);
   sem_destroy(&turnstile2);
@@ -622,6 +633,7 @@ Matrix *solveLinearSystem(Matrix *A, Matrix *B) {
   return x;
 }
 
+// This is used to turn norm array into a matrix (caused by different people doing different parts)
 Matrix *getMatrix(norm *table, int rows, int cols) {
   Matrix *result = createMatrix(rows, cols);
 
@@ -634,6 +646,7 @@ Matrix *getMatrix(norm *table, int rows, int cols) {
   return result;
 }
 
+// This is used to turn a norm into a vector (same problem as before)
 Matrix *getVector(norm vector, int rows) {
   Matrix *result = createMatrix(rows, 1);
 
@@ -645,7 +658,7 @@ Matrix *getVector(norm vector, int rows) {
 }
 
 //---------------------------------------------------------------------------------
-// Matrix calculations all multi threaded as much as possible
+// This part is for handling the X^T * X and X^T * Y
 
 typedef struct {
   const Matrix *X;
@@ -658,6 +671,7 @@ typedef struct {
   int thread_no;
 } NormalEqTask;
 
+// Thread helper function
 void *normal_eq_worker(void *arg) {
   NormalEqTask *t = (NormalEqTask *)arg;
   int d = t->X->cols;
@@ -678,6 +692,7 @@ void *normal_eq_worker(void *arg) {
   return NULL;
 }
 
+// This is the main function for calculating the coefficients
 Matrix *solveNormalEquation_parallel(
 
     const Matrix *X, const Matrix *Y, int num_threads, int client_fd,
@@ -743,7 +758,6 @@ Matrix *solveNormalEquation_parallel(
 //---------------------------------------------------------------------------------
 
 int main() {
-
   struct sockaddr_in server_addr, client_addr;
   socklen_t addr_len = sizeof(client_addr);
 
@@ -754,7 +768,7 @@ int main() {
 
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(port_no);
+  server_addr.sin_port = htons(PORT);
 
   if (bind(socket_desc, (struct sockaddr *)&server_addr, sizeof(server_addr)) <
       0) {
@@ -765,18 +779,20 @@ int main() {
     exit_c("listen");
   }
 
-  printf("Listening on port %d...\n", port_no);
+  printf("Listening on port %d...\n", PORT);
 
   client_fd = accept(socket_desc, (struct sockaddr *)&client_addr, &addr_len);
   if (client_fd < 0) {
     exit_c("accept");
   }
 
+  // This is the start of the whole deal
   char *message = "\n\nWELCOME TO TARGET PREDICTION SERVER\n"
                   "Enter CSV file name:";
 
   send(client_fd, message, strlen(message), 0);
 
+  // Get and read the file name
   char buffer[STRING_BUFFER_LIMIT];
   int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
   if (n > 0) {
@@ -811,6 +827,7 @@ int main() {
 
   send(client_fd, msgbuf, strlen(msgbuf), 0);
 
+  // Calculate the norm vector parallelized
   norm target_norm;
   message = "\n[Building normalized feature matrix X_norm...\nBuilding "
             "normalized target vector y_norm...\n\n\n";
@@ -836,6 +853,8 @@ int main() {
     }
   }
 
+  // Training part
+  // Calculate the X and Y matrices then calculate the coefficients (B)
   Matrix *X = getMatrix(normalization_table, row_count, table->num_fields);
   Matrix *Y = getVector(target_norm, row_count);
 
@@ -852,6 +871,7 @@ int main() {
   snprintf(msgbuf, sizeof(msgbuf), "%lf\n", B->data[0][0]);
   send(client_fd, msgbuf, strlen(msgbuf), 0);
 
+  // Printing the results
   for (int i = 0; i < table->num_fields - 1; i++) {
     char sign = '+';
     double val = B->data[i + 1][0];
@@ -864,6 +884,8 @@ int main() {
 
     send(client_fd, msgbuf, strlen(msgbuf), 0);
   }
+
+  // The main question loop
   bool replay = TRUE;
   while (replay) {
     message = "\n\nEnter new instance for prediction:\n\n";
@@ -893,6 +915,7 @@ int main() {
         send(client_fd, "): ", 3, 0);
       }
 
+      // We must repeat the request if the given response is invalid
       bool repeat = FALSE;
       do {
         repeat = FALSE;
@@ -934,6 +957,7 @@ int main() {
       } while (repeat);
     }
 
+    // Normalize the input
     message = "\n\nNormalizing new input...\n";
     send(client_fd, message, strlen(message), 0);
 
@@ -984,6 +1008,7 @@ int main() {
       }
     }
 
+    // Print out the result of user input
     double sum = B->data[0][0];
     double coef_value = 0;
     for (int i = 0; i < table->num_fields - 1; i++) {
@@ -1025,6 +1050,7 @@ int main() {
 
     replay = FALSE;
 
+    // Ask to repeat the loop
     message = "\n\nDo you want to continue? (y/n):\n";
     send(client_fd, message, strlen(message), 0);
     while (TRUE) {
@@ -1050,6 +1076,7 @@ int main() {
     }
   }
 
+  // Clear the remaining resources
   close(client_fd);
   close(socket_desc);
 
