@@ -23,8 +23,25 @@
 #include <arpa/inet.h> // for inet_addr
 #include <netinet/in.h>
 #include <unistd.h>
-#define port_no 60005
+#define port_no 60114
+int socket_desc, client_fd;
 
+//---------------------------------------------------------------------------------
+
+// exit--------------------------------------------------------------------------
+void exit_c(char *e)
+{
+    char msgbuf[STRING_BUFFER_LIMIT];
+    snprintf(msgbuf, sizeof(msgbuf),
+             "\n\nERROR: %s \n",
+             e);
+
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
+    close(client_fd);
+    close(socket_desc);
+    perror(e);
+    exit(1);
+}
 //---------------------------------------------------------------------------------
 
 // READ CSV--------------------------------------------------------------------
@@ -43,8 +60,7 @@ char **getFieldNames(char *line, int *num_fields)
     char **field_names = malloc(max_fields * sizeof(char *));
     if (!field_names)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
 
     char *token = strtok(line, ",\n");
@@ -52,15 +68,14 @@ char **getFieldNames(char *line, int *num_fields)
     {
         if (sizeof(token) > STRING_BUFFER_LIMIT * sizeof(char))
         {
-            perror("MAXIMUM STRING LENGTH HAS BEEN EXCEEDED");
-            exit(1);
+
+            exit_c("MAXIMUM STRING LENGTH HAS BEEN EXCEEDED");
         }
         field_names[field_no++] = strdup(token);
 
         if (field_no >= max_fields)
         {
-            perror("MAXIMUM FIELDS HAVE BEEN EXCEEDED");
-            exit(1);
+            exit_c("MAXIMUM FIELDS HAVE BEEN EXCEEDED");
         }
 
         token = strtok(NULL, ",\n");
@@ -81,8 +96,7 @@ Row readRow(char *line, int number_of_fields)
     row.values = malloc(number_of_fields * sizeof(char *));
     if (!row.values)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("Malloc");
     }
 
     char *token = strtok(line, ",\n");
@@ -108,8 +122,7 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
     Row *table = malloc(capacity * sizeof(Row));
     if (!table)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("Malloc");
     }
 
     if (fgets(line, sizeof(line), stream))
@@ -128,8 +141,8 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
 
         if (*row_count >= capacity)
         {
-            perror("MAXIMUM NUMBER OF ROWS HAVE BEEN EXCEEDED");
-            exit(1);
+
+            exit_c("MAXIMUM NUMBER OF ROWS HAVE BEEN EXCEEDED");
         }
 
         table[(*row_count)++] = row;
@@ -143,7 +156,8 @@ Row *getTable(FILE *stream, int *row_count, char ***headers)
 
 typedef struct
 {
-    char **catNames;  // array of strings for the unnormalized values of categorical attributes
+    char **catNames; // array of strings for the unnormalized values of categorical attributes
+    int catAmount;
     double *numValue; // array of normalized values for an attribute
     bool is_num;
     double x_min;
@@ -202,14 +216,12 @@ void *normalize_num(void *arg_ptr)
     double *values_d = malloc(row_count * sizeof(double));
     if (!values_d)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
 
     if (!Norm->numValue)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
 
     for (int i = 0; i < row_count; i++)
@@ -258,45 +270,66 @@ void *normalize_cat(void *arg_ptr)
     preproc_thread_arg *arg = arg_ptr; // arguments for mulitethreading
     char **values = arg->column_values;
     int row_count = arg->rowcount;
-    int last_ind = 0;
     norm *Norm = malloc(sizeof(norm));
     Norm->is_num = FALSE;
     Norm->catNames = calloc(row_count, sizeof(char *));
     Norm->numValue = malloc(row_count * sizeof(double));
     if (!Norm->catNames)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
     if (!Norm->numValue)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
-    int indexVal = 0;
-    int number_of_cats = 0;
+
     for (int i = 0; i < row_count; i++)
     {
+        for (int j = 0; values[i][j]; j++)
+        {
+            values[i][j] =
+                (char)tolower((unsigned char)values[i][j]);
+        }
 
         if (strcmp(values[i], "semi-furnished") == 0) // special rule
         {
+            Norm->catNames[1] = "semi-furnished";
+            Norm->catAmount = 3;
             Norm->numValue[i] = 0.5;
 
             continue;
         }
-        else if (strcmp(values[i], "no") == 0 || strcmp(values[i], "unfurnished") == 0)
+        else if (strcmp(values[i], "no") == 0)
         {
+            Norm->catNames[0] = "no";
+            Norm->catAmount = 2;
             Norm->numValue[i] = 0;
             continue;
         }
-        else if (strcmp(values[i], "furnished") == 0 || strcmp(values[i], "yes") == 0)
+        else if (strcmp(values[i], "yes") == 0)
         {
+            Norm->catNames[1] = "yes";
+            Norm->catAmount = 2;
+            Norm->numValue[i] = 1;
+            continue;
+        }
+        else if (strcmp(values[i], "unfurnished") == 0)
+        {
+            Norm->catNames[0] = "unfurnished";
+            Norm->catAmount = 3;
+            Norm->numValue[i] = 0;
+            continue;
+        }
+        else if (strcmp(values[i], "furnished") == 0)
+        {
+            Norm->catNames[2] = "furnished";
+            Norm->catAmount = 3;
             Norm->numValue[i] = 1;
             continue;
         }
 
         bool found = FALSE;
-        for (int j = 0; j < number_of_cats; j++)
+        for (int j = 0; j < Norm->catAmount; j++)
         {
             if (strcmp(Norm->catNames[j], values[i]) == 0) // if the value was already encountered
             {
@@ -307,12 +340,9 @@ void *normalize_cat(void *arg_ptr)
         }
         if (1 - found) // if there is no special rules for the values just number them according to the order they come
         {
-            Norm->numValue[i] = indexVal;
-            Norm->catNames[indexVal] = strdup(values[i]);
-            last_ind = indexVal;
-
-            number_of_cats++;
-            indexVal++;
+            Norm->numValue[i] = Norm->catAmount;
+            Norm->catNames[Norm->catAmount] = strdup(values[i]);
+            Norm->catAmount++;
         }
     }
 
@@ -325,7 +355,7 @@ void *normalize_cat(void *arg_ptr)
     send(arg->client_fd, msgbuf, strlen(msgbuf), 0);
 
     Norm->x_min = 0.0;
-    Norm->x_max = last_ind;
+    Norm->x_max = Norm->catAmount;
     if (Norm->x_max == 0)
     {
         return Norm;
@@ -343,15 +373,13 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target
     norm *normalTable = malloc((number_of_fields) * sizeof(norm));
     if (!normalTable)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
     normalTable[0].is_num = TRUE;
     normalTable[0].numValue = malloc(row_count * sizeof(double));
     if (!normalTable[0].numValue)
     {
-        perror("malloc");
-        exit(1);
+        exit_c("malloc");
     }
 
     for (int i = 0; i < row_count; i++)
@@ -397,8 +425,8 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target
         if (pthread_join(attribute_threads[i], (void **)&result) != 0) // pthread_create returns wheter the create was actually created
         // we write the actual values into the result variable.
         {
-            perror("pthread_join");
-            exit(1);
+
+            exit_c("pthread_join");
         }
 
         if (i == number_of_fields - 1)
@@ -407,7 +435,7 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm *target
         }
         else
         {
-            normalTable[i+1] = *result;
+            normalTable[i + 1] = *result;
         }
 
         free(args[i]->column_values);
@@ -500,18 +528,31 @@ void freeNormTable(norm *normalTable, int major_index, int index)
 // created 3 different matrix multipllications so that we didn't need to just turn all of them into 2d double arrays
 // it wasn't worth it
 // they all work the same way, iterate over the rows annd columns and summ all of them and put them in their place in the new matrix yada yada
-
-typedef struct Matrix {
+#include <semaphore.h>
+typedef struct Matrix
+{
     double **data;
     int rows;
     int cols;
 } Matrix;
 
+
+typedef struct {
+    Matrix *aug;
+    int id;
+    int n;
+  } ElimTask;
+static sem_t mutex;
+static sem_t turnstile1;
+static sem_t turnstile2;
+
+
 Matrix *createMatrix(int rows, int cols)
 {
     Matrix *matrix = malloc(sizeof(struct Matrix));
     matrix->data = malloc(rows * sizeof(double *));
-    for (int i = 0; i < rows; i++) {
+    for (int i = 0; i < rows; i++)
+    {
         matrix->data[i] = malloc(cols * sizeof(double));
         memset(matrix->data[i], 0, cols * sizeof(double));
     }
@@ -522,69 +563,146 @@ Matrix *createMatrix(int rows, int cols)
 
 void matrix_free(Matrix *m)
 {
-    if (!m) return;
+    if (!m)
+        return;
     for (int i = 0; i < m->rows; i++)
         free(m->data[i]);
     free(m->data);
     free(m);
 }
 
-Matrix* solveLinearSystem(Matrix* A, Matrix* B) {
-    int n = A->rows;
 
-    Matrix *aug = createMatrix(n, n + 1);
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++)
-            aug->data[i][j] = A->data[i][j];
-        aug->data[i][n] = B->data[i][0];
+
+static int barrier_count = 0;
+static int barrier_N = 0;
+
+void barrier_wait() {
+    sem_wait(&mutex);
+    barrier_count++;
+    if (barrier_count == barrier_N) {
+        sem_wait(&turnstile2);
+        sem_post(&turnstile1);
     }
+    sem_post(&mutex);
 
-    for (int k = 0; k < n; k++) {
-        int pivot = k;
-        double max = fabs(aug->data[k][k]);
-        for (int i = k + 1; i < n; i++) {
-            double v = fabs(aug->data[i][k]);
-            if (v > max) {
-                max = v;
-                pivot = i;
-            }
-        }
+    sem_wait(&turnstile1);
+    sem_post(&turnstile1);
 
-        if (max == 0.0) {
-            return NULL;
-        }
-
-        if (pivot != k) {
-            double *tmp = aug->data[k];
-            aug->data[k] = aug->data[pivot];
-            aug->data[pivot] = tmp;
-        }
-
-        for (int i = k + 1; i < n; i++) {
-            double factor = aug->data[i][k] / aug->data[k][k];
-            for (int j = k; j <= n; j++)
-                aug->data[i][j] -= factor * aug->data[k][j];
-        }
+    sem_wait(&mutex);
+    barrier_count--;
+    if (barrier_count == 0) {
+        sem_wait(&turnstile1);
+        sem_post(&turnstile2);
     }
+    sem_post(&mutex);
 
-    Matrix *x = createMatrix(n, 1);
-    for (int i = n - 1; i >= 0; i--) {
-        double sum = aug->data[i][n];
-        for (int j = i + 1; j < n; j++)
-            sum -= aug->data[i][j] * x->data[j][0];
-
-        x->data[i][0] = sum / aug->data[i][i];
-    }
-
-    matrix_free(aug);
-    return x;
+    sem_wait(&turnstile2);
+    sem_post(&turnstile2);
 }
 
-Matrix *getMatrix(norm *table, int rows, int cols) {
-    Matrix* result = createMatrix(rows, cols);
+void *eliminate_row(void *arg) {
+    ElimTask *t = (ElimTask *)arg;
 
-    for (int c = 0; c < cols; c++) {
-        for (int r = 0; r < rows; r++) {
+    int i = t->id;
+    int n = t->n;
+    Matrix *aug = t->aug;
+
+    for (int k = 0; k < n; k++) {
+        barrier_wait();
+
+        if (i > k) {
+            double beta = aug->data[i][k] / aug->data[k][k];
+            for (int j = k; j <= n; j++)
+                aug->data[i][j] -= beta * aug->data[k][j];
+        }
+
+        barrier_wait();
+    }
+    char msgbuf[STRING_BUFFER_LIMIT];
+
+    snprintf(msgbuf, sizeof(msgbuf),
+    "[Thread %d - Calculating beta-%d]\n", i, i);
+
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
+    return NULL;
+}
+
+Matrix *solveLinearSystem(Matrix *A, Matrix *B) {
+  int n = A->rows;
+
+  Matrix *aug = createMatrix(n, n + 1);
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++)
+      aug->data[i][j] = A->data[i][j];
+    aug->data[i][n] = B->data[i][0];
+  }
+
+  barrier_N = n + 1;
+  barrier_count = 0;
+
+  sem_init(&mutex, 0, 1);
+  sem_init(&turnstile1, 0, 0);
+  sem_init(&turnstile2, 0, 1);
+
+  pthread_t threads[n];
+  ElimTask tasks[n];
+
+  for (int i = 0; i < n; i++) {
+    tasks[i] = (ElimTask){aug, i, n};
+    pthread_create(&threads[i], NULL, eliminate_row, &tasks[i]);
+  }
+
+  for (int k = 0; k < n; k++) {
+    int pivot = k;
+    double max = fabs(aug->data[k][k]);
+    for (int i = k + 1; i < n; i++) {
+      double v = fabs(aug->data[i][k]);
+      if (v > max) {
+        max = v;
+        pivot = i;
+      }
+    }
+
+    if (max == 0.0)
+      return NULL;
+
+    if (pivot != k) {
+      double *tmp = aug->data[k];
+      aug->data[k] = aug->data[pivot];
+      aug->data[pivot] = tmp;
+    }
+
+    barrier_wait();
+    barrier_wait();
+  }
+
+  for (int i = 0; i < n; i++)
+    pthread_join(threads[i], NULL);
+
+  sem_destroy(&mutex);
+  sem_destroy(&turnstile1);
+  sem_destroy(&turnstile2);
+
+  Matrix *x = createMatrix(n, 1);
+  for (int i = n - 1; i >= 0; i--) {
+    double sum = aug->data[i][n];
+    for (int j = i + 1; j < n; j++)
+      sum -= aug->data[i][j] * x->data[j][0];
+    x->data[i][0] = sum / aug->data[i][i];
+  }
+
+  matrix_free(aug);
+  return x;
+}
+
+Matrix *getMatrix(norm *table, int rows, int cols)
+{
+    Matrix *result = createMatrix(rows, cols);
+
+    for (int c = 0; c < cols; c++)
+    {
+        for (int r = 0; r < rows; r++)
+        {
             result->data[r][c] = table[c].numValue[r];
         }
     }
@@ -592,10 +710,12 @@ Matrix *getMatrix(norm *table, int rows, int cols) {
     return result;
 }
 
-Matrix *getVector(norm vector, int rows) {
-    Matrix* result = createMatrix(rows, 1);
+Matrix *getVector(norm vector, int rows)
+{
+    Matrix *result = createMatrix(rows, 1);
 
-    for (int r = 0; r < rows; r++) {
+    for (int r = 0; r < rows; r++)
+    {
         result->data[r][0] = vector.numValue[r];
     }
 
@@ -605,7 +725,8 @@ Matrix *getVector(norm vector, int rows) {
 //---------------------------------------------------------------------------------
 // Matrix calculations all multi threaded as much as possible
 
-typedef struct {
+typedef struct
+{
     const Matrix *X;
     const Matrix *Y;
     int row_start;
@@ -616,59 +737,54 @@ typedef struct {
     int thread_no;
 } NormalEqTask;
 
-void* normal_eq_worker(void *arg) {
-    NormalEqTask *t = (NormalEqTask*)arg;
+void *normal_eq_worker(void *arg)
+{
+    NormalEqTask *t = (NormalEqTask *)arg;
     int d = t->X->cols;
-    
-    for (int i = t->row_start; i < t->row_end; i++) {
+
+    for (int i = t->row_start; i < t->row_end; i++)
+    {
         double yi = t->Y->data[i][0];
 
-        for (int j = 0; j < d; j++) {
+        for (int j = 0; j < d; j++)
+        {
             double xij = t->X->data[i][j];
             t->XTY_local->data[j][0] += xij * yi;
 
-            for (int k = j; k < d; k++) {
+            for (int k = j; k < d; k++)
+            {
                 t->XTX_local->data[j][k] += xij * t->X->data[i][k];
             }
         }
     }
-    char msgbuf[STRING_BUFFER_LIMIT];
-
-    snprintf(msgbuf, sizeof(msgbuf),
-    "[[Thread %d] Calculating from row %d to %d...\n",
-    t->thread_no, t->row_start, t->row_end-1);
-
-send(t->client_fd, msgbuf, strlen(msgbuf), 0);
+   
     return NULL;
 }
 
-Matrix* solveNormalEquation_parallel(
-    
+Matrix *solveNormalEquation_parallel(
+
     const Matrix *X,
     const Matrix *Y,
     int num_threads,
     int client_fd,
-    char** headers
-) {
+    char **headers)
+{
 
     char msgbuf[STRING_BUFFER_LIMIT];
-    
 
     int n = X->rows;
     int d = X->cols;
 
- 
-
     Matrix *XTX = createMatrix(d, d);
     Matrix *XTY = createMatrix(d, 1);
 
-    int rows_per_thread = (int) ceil((double)n/(double)num_threads);
-    num_threads = (int) ceil((double)n/(double)rows_per_thread);
-    
+    int rows_per_thread = (int)ceil((double)n / (double)num_threads);
+    num_threads = (int)ceil((double)n / (double)rows_per_thread);
+
     pthread_t threads[num_threads];
     NormalEqTask tasks[num_threads];
-    for (int t = 0; t < num_threads; t++) {
-        
+    for (int t = 0; t < num_threads; t++)
+    {
 
         tasks[t].X = X;
         tasks[t].Y = Y;
@@ -680,10 +796,7 @@ Matrix* solveNormalEquation_parallel(
         tasks[t].XTY_local = createMatrix(d, 1);
         tasks[t].client_fd = client_fd;
         tasks[t].thread_no = t;
-        
-           
-        
-        
+
         pthread_create(&threads[t], NULL, normal_eq_worker, &tasks[t]);
     }
 
@@ -691,10 +804,13 @@ Matrix* solveNormalEquation_parallel(
         pthread_join(threads[t], NULL);
 
     /* Reduction */
-    for (int t = 0; t < num_threads; t++) {
-        for (int i = 0; i < d; i++) {
+    for (int t = 0; t < num_threads; t++)
+    {
+        for (int i = 0; i < d; i++)
+        {
             XTY->data[i][0] += tasks[t].XTY_local->data[i][0];
-            for (int j = 0; j < d; j++) {
+            for (int j = 0; j < d; j++)
+            {
                 XTX->data[i][j] += tasks[t].XTX_local->data[i][j];
             }
         }
@@ -702,8 +818,10 @@ Matrix* solveNormalEquation_parallel(
         matrix_free(tasks[t].XTY_local);
     }
 
-    for (int i = 0; i < d; i++) {
-        for (int j = i + 1; j < d; j++) {
+    for (int i = 0; i < d; i++)
+    {
+        for (int j = i + 1; j < d; j++)
+        {
             XTX->data[j][i] = XTX->data[i][j];
         }
     }
@@ -720,15 +838,14 @@ Matrix* solveNormalEquation_parallel(
 
 int main()
 {
-    int socket_desc, client_fd;
+
     struct sockaddr_in server_addr, client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
     socket_desc = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_desc < 0)
     {
-        perror("socket");
-        exit(1);
+        exit_c("socket");
     }
 
     server_addr.sin_family = AF_INET;
@@ -737,14 +854,12 @@ int main()
 
     if (bind(socket_desc, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
-        perror("bind");
-        exit(1);
+        exit_c("bind");
     }
 
     if (listen(socket_desc, 1) < 0)
     {
-        perror("listen");
-        exit(1);
+        exit_c("listen");
     }
 
     printf("Listening on port %d...\n", port_no);
@@ -752,12 +867,11 @@ int main()
     client_fd = accept(socket_desc, (struct sockaddr *)&client_addr, &addr_len);
     if (client_fd < 0)
     {
-        perror("accept");
-        exit(1);
+        exit_c("accept");
     }
 
     char *message =
-        "WELCOME TO PRICE PREDICTION SERVER\n"
+        "\n\nWELCOME TO TARGET PREDICTION SERVER\n"
         "Enter CSV file name:";
 
     send(client_fd, message, strlen(message), 0);
@@ -777,9 +891,7 @@ int main()
     FILE *stream = fopen(buffer, "r"); // read the file
     if (!stream)
     {
-        puts("File couldn't be found");
-        perror("fopen");
-        return 1;
+        exit_c("File couldn't be found");
     }
 
     char msgbuf[STRING_BUFFER_LIMIT];
@@ -801,7 +913,7 @@ int main()
     send(client_fd, msgbuf, strlen(msgbuf), 0);
 
     norm target_norm;
-    message = "\n[Building normalized feature matrix X_norm...\nBuilding normalized target vector y_norm...\n";
+    message = "\n[Building normalized feature matrix X_norm...\nBuilding normalized target vector y_norm...\n\n\n";
     send(client_fd, message, strlen(message), 0);
     norm *normalization_table = getNormTable(table->num_fields, table, row_count, &target_norm, client_fd, headers);
     message = "\n[OK] All normalization threads completed.\n";
@@ -828,118 +940,149 @@ int main()
         }
     }
 
-    Matrix* X = getMatrix(normalization_table, row_count, table->num_fields);
-    Matrix* Y = getVector(target_norm, row_count);
+    Matrix *X = getMatrix(normalization_table, row_count, table->num_fields);
+    Matrix *Y = getVector(target_norm, row_count);
 
-    message = "\nSolving (XᵀX)β = Xᵀy ...\n";
+    message = "\n\n\nSolving (XᵀX)β = Xᵀy ...\n\n";
     send(client_fd, message, strlen(message), 0);
-    Matrix* B = solveNormalEquation_parallel(X, Y, COEFF_THREAD_LIMIT, client_fd, headers);
+    Matrix *B = solveNormalEquation_parallel(X, Y, COEFF_THREAD_LIMIT, client_fd, headers);
     message = "\nTraining completed.\n\nFINAL MODEL (Normalized Form)\n";
     send(client_fd, message, strlen(message), 0);
 
-    printf("max = %lf, min = %lf\n", normalization_table[0].x_max, normalization_table[0].x_min);
-    printf("\n \n \n \n  X \n");
-
-    // for (int i = 0; i < row_count; i++)
-    // {
-    //     for (int j = 0; j < table->num_fields; j++)
-    //     {
-    //         printf(" %f ", normalization_table[j].numValue[i]);
-    //     }
-    //     printf("\n");
-    // }
-
-    for (int j = 0; j < table->num_fields; j++)
-    {
-        printf(" %f ", normalization_table[j].numValue[2]);
-    }
-    message = "\nprice_norm =\n";
-    send(client_fd, message, strlen(message), 0);
+    snprintf(msgbuf, sizeof(msgbuf),
+             "%s_norm =\n",
+             headers[table->num_fields - 1]);
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
     snprintf(msgbuf, sizeof(msgbuf),
              "%lf\n",
              B->data[0][0]);
     send(client_fd, msgbuf, strlen(msgbuf), 0);
-    printf("\n \n \n \n  y \n");
 
     for (int i = 0; i < table->num_fields - 1; i++)
     {
+        char sign = '+';
+        double val = B->data[i + 1][0];
+        if (val < 0)
+        {
+            sign = '-';
+            val = -val;
+        }
+
         snprintf(msgbuf, sizeof(msgbuf),
-                 "%lf * %s\n",
-                 B->data[i + 1][0], headers[i]);
+                 "%c %lf * %s\n",
+                 sign, val, headers[i]);
 
         send(client_fd, msgbuf, strlen(msgbuf), 0);
-        printf(" %lf\t", target_norm.numValue[i]);
-        printf("\n");
     }
-
-    message = "\n\nEnter new instance for prediction:\n\n";
-    send(client_fd, message, strlen(message), 0);
-    Row input;
-    input.num_fields = table->num_fields - 1;
-    input.values = malloc(sizeof(char *) * input.num_fields);
-    for (int i = 0; i < table->num_fields - 1; i++)
+    bool replay = TRUE;
+    while (replay)
     {
-        if (normalization_table[i + 1].is_num)
+        message = "\n\nEnter new instance for prediction:\n\n";
+        send(client_fd, message, strlen(message), 0);
+        Row input;
+        input.num_fields = table->num_fields - 1;
+        input.values = malloc(sizeof(char *) * input.num_fields);
+        for (int i = 0; i < table->num_fields - 1; i++)
         {
-            snprintf(msgbuf, sizeof(msgbuf),
-                     "%s  (xmin=%lf, xmax=%lf)\n",
-                     headers[i], normalization_table[i + 1].x_min, normalization_table[i + 1].x_max);
-        }
-        else
-        {
-            snprintf(msgbuf, sizeof(msgbuf),
-                     "%s\n",
-                     headers[i]);
-        }
-
-        send(client_fd, msgbuf, strlen(msgbuf), 0);
-
-        int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        if (n > 0)
-        {
-            buffer[n] = '\0';
-            buffer[strcspn(buffer, "\r\n")] = '\0';
-            printf("Client sent: '%s'\n", buffer);
-        }
-        input.values[i] = strdup(buffer);
-
-
-        snprintf(msgbuf, sizeof(msgbuf),
-                 "%s\n",
-                 buffer);
-
-    }
-
-    message = "\n\nNormalizing new input...\n";
-    send(client_fd, message, strlen(message), 0);
-
-
-    double *test = malloc(input.num_fields * sizeof(double));
-    for (int i = 0; i < input.num_fields; i++)
-    {   
-        snprintf(msgbuf, sizeof(msgbuf),
-        "normalizing = %s\n",
-        headers[i]);
-
-        send(client_fd, msgbuf, strlen(msgbuf), 0);
-        double value =0;
-        if (normalization_table[i + 1].is_num)
-        {
-            sscanf(input.values[i], "%lf", &value);
-            if (normalization_table[i + 1].x_max == normalization_table[i + 1].x_min)
+            if (normalization_table[i + 1].is_num)
             {
-                test[i] = 0.0;
+                snprintf(msgbuf, sizeof(msgbuf),
+                         "%s (xmin=%lf, xmax=%lf): ",
+                         headers[i], normalization_table[i + 1].x_min, normalization_table[i + 1].x_max);
+                send(client_fd, msgbuf, strlen(msgbuf), 0);
             }
             else
             {
-                test[i] = (value - normalization_table[i + 1].x_min) / (normalization_table[i + 1].x_max - normalization_table[i + 1].x_min);
+                snprintf(msgbuf, sizeof(msgbuf), "%s (", headers[i]);
+                send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+                for (int j = 0; j < normalization_table[i + 1].catAmount; j++)
+                {
+                    snprintf(msgbuf, sizeof(msgbuf), "%s", normalization_table[i + 1].catNames[j]);
+                    send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+                    if (j < normalization_table[i + 1].catAmount - 1) {
+                        send(client_fd, ", ", 2, 0);
+                    }
+                }
+                send(client_fd, "): ", 3, 0);
             }
-        }
-        else
-        {
-            bool flag = FALSE;
-            for (int j = 0; j < sizeof(normalization_table[i + 1].catNames) / sizeof(char *); j++)
+
+            
+            bool repeat = FALSE;
+            do
             {
+                repeat = FALSE;
+                int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+                send(client_fd, "\n", 1, 0);
+                if (n > 0)
+                {
+                    buffer[n] = '\0';
+                    buffer[strcspn(buffer, "\r\n")] = '\0';
+                    printf("Client sent: '%s'\n", buffer);
+                }
+                input.values[i] = strdup(buffer);
+                for (int k = 0; input.values[i][k]; k++)
+                {
+                    input.values[i][k] = (char)tolower((unsigned char)input.values[i][k]);
+                }
+
+                if (normalization_table[i + 1].is_num && 1 - is_num(input.values[i]))
+                {
+                    message = "PLEASE ENTER A NUMBER: ";
+                    send(client_fd, message, strlen(message), 0);
+                    repeat = TRUE;
+                }
+                else if (1 - normalization_table[i + 1].is_num)
+                {
+                    int pivot = -1;
+                    for (int j = 0; j < normalization_table[i + 1].catAmount; j++)
+                    {
+
+                        if (strcmp(normalization_table[i + 1].catNames[j], input.values[i]) == 0) // if the value was already encountered
+                        {
+                            pivot = j;
+                            break;
+                        }
+                    }
+
+                    if (pivot == -1)
+                    {
+                        message = "PLEASE ENTER A VALID CATEGORY: ";
+                        send(client_fd, message, strlen(message), 0);
+                        repeat = TRUE;
+                    }
+                }
+            } while (repeat);
+        }
+
+        message = "\n\nNormalizing new input...\n";
+        send(client_fd, message, strlen(message), 0);
+
+        double *test = malloc(input.num_fields * sizeof(double));
+        for (int i = 0; i < input.num_fields; i++)
+        {
+            snprintf(msgbuf, sizeof(msgbuf),
+                     "normalizing = %s\n",
+                     headers[i]);
+
+            send(client_fd, msgbuf, strlen(msgbuf), 0);
+            double value = 0;
+            if (normalization_table[i + 1].is_num)
+            {
+                sscanf(input.values[i], "%lf", &value);
+                if (normalization_table[i + 1].x_max == normalization_table[i + 1].x_min)
+                {
+                    test[i] = 0.0;
+                }
+                else
+                {
+                    test[i] = (value - normalization_table[i + 1].x_min) / (normalization_table[i + 1].x_max - normalization_table[i + 1].x_min);
+                }
+            }
+            else
+            {
+                bool flag = FALSE;
                 if (strcmp(input.values[i], "semi-furnished") == 0) // special rule
                 {
                     test[i] = 0.5;
@@ -956,128 +1099,108 @@ int main()
                     test[i] = 1;
                     continue;
                 }
-                if (strcmp(normalization_table[i + 1].catNames[j], input.values[i]) == 0) // if the value was already encountered
+                for (int j = 0; j < normalization_table[i + 1].catAmount; j++)
                 {
-                    test[i] = j;
-                    flag=TRUE;
-                
+
+                    if (strcmp(normalization_table[i + 1].catNames[j], input.values[i]) == 0) // if the value was already encountered
+                    {
+                        test[i] = j;
+                        flag = TRUE;
+                    }
                 }
-
-            }
-            if(1-flag){
-                test[i] = sizeof(normalization_table[i + 1].catNames) / sizeof(char *);
+                if (1 - flag)
+                {
+                    exit_c("invalid input");
+                }
             }
         }
-    }
-
-        for(int i=0;i<input.num_fields;i++){
-            printf("max = %lf, min = %lf\n", normalization_table[i+1].x_max, normalization_table[i+1].x_min);
-
-            snprintf(msgbuf, sizeof(msgbuf),
-                     "%20s_norm = %lf\n",
-                     headers[i], test [i]);
-
-                     send(client_fd, msgbuf, strlen(msgbuf), 0);
-
-        }
-
-        
 
         double sum = B->data[0][0];
-        double coef_value=0;
+        double coef_value = 0;
         for (int i = 0; i < table->num_fields - 1; i++)
         {
-            coef_value= test[i] * B->data[i + 1][0];
+            coef_value = test[i] * B->data[i + 1][0];
             snprintf(msgbuf, sizeof(msgbuf),
-            "%20s_norm = %lf\n",
-            headers[i], coef_value);
+                     "\n%20s_norm = %lf",
+                     headers[i], test[i]);
 
             send(client_fd, msgbuf, strlen(msgbuf), 0);
 
-            sum+=coef_value;
+            sum += coef_value;
         }
 
         snprintf(msgbuf, sizeof(msgbuf),
-            "\n\npredicted normalized %s = %lf\n",
-            headers[table->num_fields-1], sum);
+                 "\n\nPredicted normalized %s = %lf\n",
+                 headers[table->num_fields - 1], sum);
 
-            send(client_fd, msgbuf, strlen(msgbuf), 0);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
 
+        message = "\n\nReverse-normalizing target...\n";
+        send(client_fd, message, strlen(message), 0);
+        double y = (sum * (target_norm.x_max - target_norm.x_min)) + target_norm.x_min;
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "%s = %lf * (%lf - %lf) + %lf\n",
+                 headers[table->num_fields - 1], sum, target_norm.x_max, target_norm.x_min, target_norm.x_min);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "%s = %lf\n",
+                 headers[table->num_fields - 1], y);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
 
-            message = "\n\nReverse-normalizing target...\n";
-            send(client_fd, message, strlen(message), 0);   
-            double y = (sum*(target_norm.x_max-target_norm.x_min))+target_norm.x_min;
-            snprintf(msgbuf, sizeof(msgbuf),
-            "\n\n %s = %lf\n",
-            headers[table->num_fields-1], y);
-            send(client_fd, msgbuf, strlen(msgbuf), 0);
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "\n%s PREDICTION RESULTS:\n",
+                 headers[table->num_fields - 1]);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
 
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "\nNormalized prediction : %lf\n",
+                 sum);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
 
-            message = "\n\nPRICE PREDICTION RESULTS:\n";
-            send(client_fd, message, strlen(message), 0);   
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "\nReal-scale prediction : %lf\n",
+                 y);
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
 
-            snprintf(msgbuf, sizeof(msgbuf),
-            "\n Normalized prediction : %lf\n",
-             sum);
-             send(client_fd, msgbuf, strlen(msgbuf), 0);
+        replay = FALSE;
 
-             snprintf(msgbuf, sizeof(msgbuf),
-            "\n Real-scale prediction : %lf\n",
-             y);
-             send(client_fd, msgbuf, strlen(msgbuf), 0);
+        message = "\n\nDo you want to continue? (y/n):\n";
+        send(client_fd, message, strlen(message), 0);
+        while (TRUE)
+        {
+            n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+            if (n > 0)
+            {
+                buffer[n] = '\0';
+                buffer[strcspn(buffer, "\r\n")] = '\0';
+                printf("Client sent: '%s'\n", buffer);
+            }
 
-        // printf("\n \n  \n \n XT \n");
-        // for (int i = 0; i < table->num_fields; i++)
-        // {
-        //     for (int j = 0; j < row_count; j++)
-        //     {
-        //         printf(" %lf\t", transpose_matrix[i][j]);
-        //     }
-        //     printf("\n");
-        // }
-        // printf("\n \n \n \n  XT*X \n");
-        // for (int i = 0; i < table->num_fields; i++)
-        // {
-        //     for (int j = 0; j < table->num_fields; j++)
-        //     {
-        //         printf(" %lf\t", XTX[i][j]);
-        //     }
-        //     printf("\n");
-        // }
-
-        // printf("\n \n \n \n  (XT*X)^(-1) \n");
-        // for (int i = 0; i < table->num_fields; i++)
-        // {
-        //     for (int j = 0; j < table->num_fields; j++)
-        //     {
-        //         printf(" %lf\t", inv_matrix[i][j]);
-        //     }
-        //     printf("\n");
-        // }
-
-        // printf("\n \n \n \n  (XTX)^(-1)*XT \n");
-
-        // for (int i = 0; i < table->num_fields; i++)
-        // { // rows = field_count
-        //     for (int j = 0; j < row_count; j++)
-        //     { // cols = row_count
-        //         printf(" %lf\t", XTX_iXT[i][j]);
-        //     }
-        //     printf("\n");
-        // }
-
-       
-
-        
-
-        close(client_fd);
-        close(socket_desc);
-
-        freeNormTable(normalization_table, table->num_fields, row_count);
-        freeHeaders(headers, table->num_fields);
-        freeNorm(target_norm, row_count);
-        freeTable(table, row_count);
-
-        matrix_free(B);
+            if (strcmp(buffer, "y") == 0)
+            {
+                replay = TRUE;
+                break;
+            }
+            else if (strcmp(buffer, "n") == 0)
+            {
+                snprintf(msgbuf, sizeof(msgbuf),
+                         "\n\nThank you for using %s PREDICTION SERVER! Good Bye!\n",
+                         headers[table->num_fields - 1]);
+                send(client_fd, msgbuf, strlen(msgbuf), 0);
+                break;
+            }
+            message = "\n\nType either 'Y' or 'n' \n";
+            send(client_fd, message, strlen(message), 0);
+        }
     }
 
+    close(client_fd);
+    close(socket_desc);
+
+    freeNormTable(normalization_table, table->num_fields, row_count);
+    freeHeaders(headers, table->num_fields);
+    freeNorm(target_norm, row_count);
+    freeTable(table, row_count);
+
+    matrix_free(B);
+}
