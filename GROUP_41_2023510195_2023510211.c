@@ -4,17 +4,27 @@
 #include <ctype.h> // might have to delete these
 #include <pthread.h>
 #include <math.h>
+#include <arpa/inet.h> // for inet_addr
 
 #define bool int
 #define TRUE 1
 #define FALSE 0
 
-#define PORT_NUMBER 60000
 #define MAX_SAMPLES 10000
 #define MAX_FEATURES 100
 #define STRING_BUFFER_LIMIT 100
 #define PREPOC_THREAD_LIMIT 128
 #define COEFF_THREAD_LIMIT 128
+
+// Port-----------------------------------------------------------------------------
+#include <sys/socket.h>
+#include <arpa/inet.h> // for inet_addr
+#include <netinet/in.h>
+#include <unistd.h>
+#define port_no 60000
+
+//---------------------------------------------------------------------------------
+
 // READ CSV--------------------------------------------------------------------
 
 typedef struct
@@ -38,7 +48,11 @@ char **getFieldNames(char *line, int *num_fields)
     char *token = strtok(line, ",\n");
     while (token != NULL)
     {
-
+        if (sizeof(token) > STRING_BUFFER_LIMIT * sizeof(char))
+        {
+            perror("MAXIMUM STRING LENGTH HAS BEEN EXCEEDED");
+            exit(1);
+        }
         field_names[field_no++] = strdup(token);
 
         if (field_no >= max_fields)
@@ -76,12 +90,6 @@ Row readRow(char *line, int number_of_fields)
         row.values[field_no] = strdup(token);
         field_no++;
         token = strtok(NULL, ",\n");
-    }
-
-    if (field_no != number_of_fields)
-    {
-
-        // what are we supposed to do with missing values?
     }
 
     return row;
@@ -144,6 +152,9 @@ typedef struct // this is necessary for multithreadding
 {
     char **column_values;
     int rowcount;
+    int thread_index;
+    int client_fd;
+    char *col_name;
 } preproc_thread_arg;
 
 #include <ctype.h>
@@ -213,6 +224,16 @@ void *normalize_num(void *arg_ptr)
         }
     }
 
+    char msgbuf[STRING_BUFFER_LIMIT];
+    snprintf(msgbuf, sizeof(msgbuf),
+             "[Thread N%d] Normalizing %s... xmin=%.2f xmax=%.2f\n",
+             arg->thread_index,
+             arg->col_name,
+             Norm->x_min,
+             Norm->x_max);
+
+    send(arg->client_fd, msgbuf, strlen(msgbuf), 0);
+
     for (int i = 0; i < row_count; i++)
     {
         double denom = (Norm->x_max - Norm->x_min);
@@ -225,7 +246,6 @@ void *normalize_num(void *arg_ptr)
             Norm->numValue[i] = (values_d[i] - Norm->x_min) / denom; // min-max normalization
         }
     }
-
 
     free(values_d);
     return Norm;
@@ -259,7 +279,7 @@ void *normalize_cat(void *arg_ptr)
         if (strcmp(values[i], "semi-furnished") == 0) // special rule
         {
             Norm->numValue[i] = 0.5;
-            
+
             continue;
         }
         else if (strcmp(values[i], "no") == 0 || strcmp(values[i], "unfurnished") == 0)
@@ -267,7 +287,7 @@ void *normalize_cat(void *arg_ptr)
             Norm->numValue[i] = 0;
             continue;
         }
-        else if (strcmp(values[i], "furnished") == 0 || strcmp(values[i], "yes") == 0 )
+        else if (strcmp(values[i], "furnished") == 0 || strcmp(values[i], "yes") == 0)
         {
             Norm->numValue[i] = 1;
             continue;
@@ -294,6 +314,14 @@ void *normalize_cat(void *arg_ptr)
         }
     }
 
+    char msgbuf[STRING_BUFFER_LIMIT];
+    snprintf(msgbuf, sizeof(msgbuf),
+             "[Thread N%d] Normalizing %s\n",
+             arg->thread_index,
+             arg->col_name);
+
+    send(arg->client_fd, msgbuf, strlen(msgbuf), 0);
+
     Norm->x_min = 0.0;
     Norm->x_max = last_ind;
     if (Norm->x_max == 0)
@@ -304,10 +332,11 @@ void *normalize_cat(void *arg_ptr)
     {
         Norm->numValue[i] /= Norm->x_max;
     }
+
     return Norm;
 }
 
-norm *getNormTable(int number_of_fields, Row *table, int row_count, norm **target_norm)
+norm *getNormTable(int number_of_fields, Row *table, int row_count, norm **target_norm, int client_fd, char **headers)
 {
     norm *normalTable = malloc((number_of_fields) * sizeof(norm));
     if (!normalTable)
@@ -346,13 +375,17 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm **targe
         args[i] = malloc(sizeof(preproc_thread_arg));
         args[i]->rowcount = row_count;
         args[i]->column_values = column_values;
-        preproc_thread_arg arg = {column_values, row_count};
+        args[i]->thread_index = i;
+        args[i]->client_fd = client_fd;
+        args[i]->col_name = headers[i];
         if (num_flag) // chec if the attribute is numerical
         {
+
             pthread_create(&(attribute_threads[i]), NULL, normalize_num, (void *)args[i]);
         }
         else
         {
+
             pthread_create(&(attribute_threads[i]), NULL, normalize_cat, (void *)args[i]);
         }
     }
@@ -372,8 +405,8 @@ norm *getNormTable(int number_of_fields, Row *table, int row_count, norm **targe
         }
         else
         {
-            normalTable[i+1] = *result;
-                    }
+            normalTable[i + 1] = *result;
+        }
 
         free(args[i]->column_values);
         free(args[i]);
@@ -635,22 +668,114 @@ double **matrixInversion(double **matrix_org, int field_count)
 
 int main()
 {
+    int socket_desc, client_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
 
-    FILE *stream = fopen("Housing.csv", "r"); // read the file
+    socket_desc = socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_desc < 0)
+    {
+        perror("socket");
+        exit(1);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port_no);
+
+    if (bind(socket_desc, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        perror("bind");
+        exit(1);
+    }
+
+    if (listen(socket_desc, 1) < 0)
+    {
+        perror("listen");
+        exit(1);
+    }
+
+    printf("Listening on port %d...\n", port_no);
+
+    client_fd = accept(socket_desc, (struct sockaddr *)&client_addr, &addr_len);
+    if (client_fd < 0)
+    {
+        perror("accept");
+        exit(1);
+    }
+
+    char *message =
+        "WELCOME TO PRICE PREDICTION SERVER\n"
+        "Enter CSV file name:";
+
+    send(client_fd, message, strlen(message), 0);
+
+    char buffer[STRING_BUFFER_LIMIT];
+    int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    if (n > 0)
+    {
+        buffer[n] = '\0';
+        buffer[strcspn(buffer, "\r\n")] = '\0';
+        printf("Client sent: '%s'\n", buffer);
+    }
+
+    message = "\n\nChecking dataset...\n";
+    send(client_fd, message, strlen(message), 0);
+
+    FILE *stream = fopen(buffer, "r"); // read the file
     if (!stream)
     {
+        puts("File couldn't be found");
         perror("fopen");
         return 1;
     }
+
+    char msgbuf[STRING_BUFFER_LIMIT];
+    snprintf(msgbuf, sizeof(msgbuf),
+             "\n\n[OK] File %s found. Reading file...\n",
+             buffer);
+
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
 
     char **headers;
     int row_count;
     // we need to pass the adresses of row_count and headers so we can manipulate them inside the functi0n
     // since c does not support returning more than one value this is necessary
     Row *table = getTable(stream, &row_count, &headers);
-    norm *target_norm;
+    snprintf(msgbuf, sizeof(msgbuf),
+             "\n\n%d rows loaded.\n%d columns detected.\n\ncolumn analysis:\n",
+             row_count, table->num_fields);
 
-    norm *normalization_table = getNormTable(table->num_fields, table, row_count, &target_norm);
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+    norm *target_norm;
+    message = "\n[Building normalized feature matrix X_norm...\nBuilding normalized target vector y_norm...\n";
+    send(client_fd, message, strlen(message), 0);
+    norm *normalization_table = getNormTable(table->num_fields, table, row_count, &target_norm, client_fd, headers);
+    message = "\n[OK] All normalization threads completed.\n";
+    send(client_fd, message, strlen(message), 0);
+
+    for (int i = 0; i < table->num_fields; i++)
+    {
+        char *type = "categorical";
+        if (normalization_table[i].is_num)
+        {
+            type = "numerical";
+        }
+
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "\n%20s: %s",
+                 headers[i], type);
+
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+        if (i == table->num_fields - 1)
+        {
+            message = " (target)";
+            send(client_fd, message, strlen(message), 0);
+        }
+    }
+
     double **transpose_matrix = getTansposeMatrix(normalization_table, row_count, table->num_fields);
     double **XTX = matrixMultiplication_nm(transpose_matrix, normalization_table, table->num_fields, row_count);
     double **inv_matrix = matrixInversion(XTX, table->num_fields);
@@ -660,8 +785,11 @@ int main()
                                 table->num_fields, // rows of inv_matrix
                                 table->num_fields, // cols of inv_matrix = rows of XT
                                 row_count);        // cols of XT
-
+    message = "\nSolving (XᵀX)β = Xᵀy ...\n";
+    send(client_fd, message, strlen(message), 0);
     double **coefficients = matrixMultiplication_mn(XTX_iXT, target_norm, table->num_fields, row_count);
+    message = "\nTraining completed.\n\nFINAL MODEL (Normalized Form)\n";
+    send(client_fd, message, strlen(message), 0);
     printf("max = %lf, min = %lf\n", normalization_table[0].x_max, normalization_table[0].x_min);
     printf("\n \n \n \n  X \n");
 
@@ -678,90 +806,234 @@ int main()
     {
         printf(" %f ", normalization_table[j].numValue[2]);
     }
-
-    double sum2 = coefficients[0][0];
-    double test[] = { 0.571134,  0.400000,  0.333333,  0.333333,  1.000000,  0.000000,  1.000000,  0.000000,  0.000000 , 0.666667,  1.000000,  0.500000};
-    for (int i = 0; i < table->num_fields - 1; i++)
-    {
-        sum2 += test[i] * coefficients[i + 1][0];
-    }
-    printf("ANSWER HERE %lf", sum2);
-    // printf("\n \n  \n \n XT \n");
-    // for (int i = 0; i < table->num_fields; i++)
-    // {
-    //     for (int j = 0; j < row_count; j++)
-    //     {
-    //         printf(" %lf\t", transpose_matrix[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-    // printf("\n \n \n \n  XT*X \n");
-    // for (int i = 0; i < table->num_fields; i++)
-    // {
-    //     for (int j = 0; j < table->num_fields; j++)
-    //     {
-    //         printf(" %lf\t", XTX[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-
-    // printf("\n \n \n \n  (XT*X)^(-1) \n");
-    // for (int i = 0; i < table->num_fields; i++)
-    // {
-    //     for (int j = 0; j < table->num_fields; j++)
-    //     {
-    //         printf(" %lf\t", inv_matrix[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-
-
-
+    message = "\nprice_norm =\n";
+    send(client_fd, message, strlen(message), 0);
+    snprintf(msgbuf, sizeof(msgbuf),
+             "%lf\n",
+             coefficients[0][0]);
+    send(client_fd, msgbuf, strlen(msgbuf), 0);
     printf("\n \n \n \n  y \n");
 
-    // for (int i = 0; i < row_count; i++)
-    // {
-    //     printf(" %lf\t", target_norm->numValue[i]);
-    //     printf("\n");
-    // }
-    
- printf(" %lf\t", target_norm->numValue[2]);
-
-    // printf("\n \n \n \n  (XTX)^(-1)*XT \n");
-
-    // for (int i = 0; i < table->num_fields; i++)
-    // { // rows = field_count
-    //     for (int j = 0; j < row_count; j++)
-    //     { // cols = row_count
-    //         printf(" %lf\t", XTX_iXT[i][j]);
-    //     }
-    //     printf("\n");
-    // }
-
-    printf("\n \n \n \n  (XTX)^(-1)*XT*y \n");
-    double sum = 0;
-
-    for (int i = 0; i < table->num_fields; i++)
+    for (int i = 0; i < table->num_fields - 1; i++)
     {
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "%lf * %s\n",
+                 coefficients[i + 1][0], headers[i]);
 
-        printf(" %lf\t", coefficients[i][0]);
-        sum += coefficients[i][0];
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
+        printf(" %lf\t", target_norm->numValue[i]);
         printf("\n");
     }
-    printf("%lf \n", sum);
 
-    for (int i = 0; i < table->num_fields; i++)
+    message = "\n\nEnter new instance for prediction:\n\n";
+    send(client_fd, message, strlen(message), 0);
+    Row input;
+    input.num_fields = table->num_fields - 1;
+    input.values = malloc(sizeof(char *) * input.num_fields);
+    for (int i = 0; i < table->num_fields - 1; i++)
     {
-        printf("max = %lf, min = %lf\n", normalization_table[i].x_max, normalization_table[i].x_min);
+        if (normalization_table[i + 1].is_num)
+        {
+            snprintf(msgbuf, sizeof(msgbuf),
+                     "%s  (xmin=%lf, xmax=%lf)\n",
+                     headers[i], normalization_table[i + 1].x_min, normalization_table[i + 1].x_max);
+        }
+        else
+        {
+            snprintf(msgbuf, sizeof(msgbuf),
+                     "%s\n",
+                     headers[i]);
+        }
+
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+        int n = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        if (n > 0)
+        {
+            buffer[n] = '\0';
+            buffer[strcspn(buffer, "\r\n")] = '\0';
+            printf("Client sent: '%s'\n", buffer);
+        }
+        input.values[i] = strdup(buffer);
+
+
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "%s\n",
+                 buffer);
+                 send(client_fd, msgbuf, strlen(msgbuf), 0);
+
     }
 
-    freeNormTable(normalization_table, table->num_fields, row_count);
-    freeHeaders(headers, table->num_fields);
-    freeNorm(target_norm, row_count);
-    freeMatrix(transpose_matrix, table->num_fields);
-    freeMatrix(XTX, table->num_fields);
-    freeMatrix(coefficients, table->num_fields);
-    freeMatrix(XTX_iXT, table->num_fields);
-    freeMatrix(inv_matrix, table->num_fields);
-    freeTable(table, row_count);
-}
+    message = "\n\nNormalizing new input...\n";
+    send(client_fd, message, strlen(message), 0);
+
+
+    double *test = malloc(input.num_fields * sizeof(double));
+    for (int i = 0; i < input.num_fields; i++)
+    {   
+        snprintf(msgbuf, sizeof(msgbuf),
+        "normalizimg = %s\n",
+        headers[i]);
+
+        send(client_fd, msgbuf, strlen(msgbuf), 0);
+        double value =0;
+        if (normalization_table[i + 1].is_num)
+        {
+            sscanf(input.values[i], "%lf", &value);
+            if (normalization_table[i + 1].x_max == normalization_table[i + 1].x_min)
+            {
+                test[i] = 0.0;
+            }
+            else
+            {
+                test[i] = (value - normalization_table[i + 1].x_min) / (normalization_table[i + 1].x_max - normalization_table[i + 1].x_min);
+            }
+        }
+        else
+        {
+            bool flag = FALSE;
+            for (int j = 0; j < sizeof(normalization_table[i + 1].catNames) / sizeof(char *); j++)
+            {
+                if (strcmp(input.values[i], "semi-furnished") == 0) // special rule
+                {
+                    test[i] = 0.5;
+
+                    continue;
+                }
+                else if (strcmp(input.values[i], "no") == 0 || strcmp(input.values[i], "unfurnished") == 0)
+                {
+                    test[i] = 0;
+                    continue;
+                }
+                else if (strcmp(input.values[i], "furnished") == 0 || strcmp(input.values[i], "yes") == 0)
+                {
+                    test[i] = 1;
+                    continue;
+                }
+                if (strcmp(normalization_table[i + 1].catNames[j], input.values[i]) == 0) // if the value was already encountered
+                {
+                    test[i] = j;
+                    flag=TRUE;
+                
+                }
+
+            }
+            if(1-flag){
+                test[i] = sizeof(normalization_table[i + 1].catNames) / sizeof(char *);
+            }
+        }
+    }
+
+        for(int i=0;i<input.num_fields;i++){
+            printf("max = %lf, min = %lf\n", normalization_table[i+1].x_max, normalization_table[i+1].x_min);
+
+            snprintf(msgbuf, sizeof(msgbuf),
+                     "%20s_norm = %lf\n",
+                     headers[i], test [i]);
+
+                     send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+        }
+
+        
+
+        double sum = coefficients[0][0];
+        double coef_value=0;
+        for (int i = 0; i < table->num_fields - 1; i++)
+        {
+            coef_value= test[i] * coefficients[i + 1][0];
+            snprintf(msgbuf, sizeof(msgbuf),
+            "%20s_norm = %lf\n",
+            headers[i], coef_value);
+
+            send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+            sum+=coef_value;
+        }
+
+        snprintf(msgbuf, sizeof(msgbuf),
+            "\n\npredicted normalized %s = %lf\n",
+            headers[table->num_fields-1], sum);
+
+            send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+
+            message = "\n\nReverse-normalizing target...\n";
+            send(client_fd, message, strlen(message), 0);   
+            double y = (sum*(target_norm->x_max-target_norm->x_min))+target_norm->x_min;
+            snprintf(msgbuf, sizeof(msgbuf),
+            "\n\n %s = %lf\n",
+            headers[table->num_fields-1], y);
+            send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+
+            message = "\n\nPRICE PREDICTION RESULTS:\n";
+            send(client_fd, message, strlen(message), 0);   
+
+            snprintf(msgbuf, sizeof(msgbuf),
+            "\n Normalized prediction : %lf\n",
+             sum);
+             send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+             snprintf(msgbuf, sizeof(msgbuf),
+            "\n Real-scale prediction : %lf\n",
+             y);
+             send(client_fd, msgbuf, strlen(msgbuf), 0);
+
+        // printf("\n \n  \n \n XT \n");
+        // for (int i = 0; i < table->num_fields; i++)
+        // {
+        //     for (int j = 0; j < row_count; j++)
+        //     {
+        //         printf(" %lf\t", transpose_matrix[i][j]);
+        //     }
+        //     printf("\n");
+        // }
+        // printf("\n \n \n \n  XT*X \n");
+        // for (int i = 0; i < table->num_fields; i++)
+        // {
+        //     for (int j = 0; j < table->num_fields; j++)
+        //     {
+        //         printf(" %lf\t", XTX[i][j]);
+        //     }
+        //     printf("\n");
+        // }
+
+        // printf("\n \n \n \n  (XT*X)^(-1) \n");
+        // for (int i = 0; i < table->num_fields; i++)
+        // {
+        //     for (int j = 0; j < table->num_fields; j++)
+        //     {
+        //         printf(" %lf\t", inv_matrix[i][j]);
+        //     }
+        //     printf("\n");
+        // }
+
+        // printf("\n \n \n \n  (XTX)^(-1)*XT \n");
+
+        // for (int i = 0; i < table->num_fields; i++)
+        // { // rows = field_count
+        //     for (int j = 0; j < row_count; j++)
+        //     { // cols = row_count
+        //         printf(" %lf\t", XTX_iXT[i][j]);
+        //     }
+        //     printf("\n");
+        // }
+
+       
+
+        
+
+        close(client_fd);
+        close(socket_desc);
+
+        freeNormTable(normalization_table, table->num_fields, row_count);
+        freeHeaders(headers, table->num_fields);
+        freeNorm(target_norm, row_count);
+        freeMatrix(transpose_matrix, table->num_fields);
+        freeMatrix(XTX, table->num_fields);
+        freeMatrix(coefficients, table->num_fields);
+        freeMatrix(XTX_iXT, table->num_fields);
+        freeMatrix(inv_matrix, table->num_fields);
+        freeTable(table, row_count);
+    }
