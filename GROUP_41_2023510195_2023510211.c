@@ -23,7 +23,7 @@
 #include <arpa/inet.h> // for inet_addr
 #include <netinet/in.h>
 #include <unistd.h>
-#define port_no 60000
+#define port_no 60005
 
 //---------------------------------------------------------------------------------
 
@@ -612,12 +612,14 @@ typedef struct {
     int row_end;
     Matrix *XTX_local;
     Matrix *XTY_local;
+    int client_fd;
+    int thread_no;
 } NormalEqTask;
 
 void* normal_eq_worker(void *arg) {
     NormalEqTask *t = (NormalEqTask*)arg;
     int d = t->X->cols;
-
+    
     for (int i = t->row_start; i < t->row_end; i++) {
         double yi = t->Y->data[i][0];
 
@@ -630,30 +632,44 @@ void* normal_eq_worker(void *arg) {
             }
         }
     }
+    char msgbuf[STRING_BUFFER_LIMIT];
+
+    snprintf(msgbuf, sizeof(msgbuf),
+    "[[Thread %d] Calculating from row %d to %d...\n",
+    t->thread_no, t->row_start, t->row_end-1);
+
+send(t->client_fd, msgbuf, strlen(msgbuf), 0);
     return NULL;
 }
 
 Matrix* solveNormalEquation_parallel(
+    
     const Matrix *X,
     const Matrix *Y,
-    int num_threads
+    int num_threads,
+    int client_fd,
+    char** headers
 ) {
+
+    char msgbuf[STRING_BUFFER_LIMIT];
+    
+
     int n = X->rows;
     int d = X->cols;
 
-    pthread_t threads[num_threads];
-    NormalEqTask tasks[num_threads];
+ 
 
     Matrix *XTX = createMatrix(d, d);
     Matrix *XTY = createMatrix(d, 1);
 
-    int rows_per_thread = n / num_threads;
-    if (rows_per_thread == 0) {
-        rows_per_thread = 1;
-        num_threads = n;
-    }
-
+    int rows_per_thread = (int) ceil((double)n/(double)num_threads);
+    num_threads = (int) ceil((double)n/(double)rows_per_thread);
+    
+    pthread_t threads[num_threads];
+    NormalEqTask tasks[num_threads];
     for (int t = 0; t < num_threads; t++) {
+        
+
         tasks[t].X = X;
         tasks[t].Y = Y;
         tasks[t].row_start = t * rows_per_thread;
@@ -662,7 +678,12 @@ Matrix* solveNormalEquation_parallel(
 
         tasks[t].XTX_local = createMatrix(d, d);
         tasks[t].XTY_local = createMatrix(d, 1);
-
+        tasks[t].client_fd = client_fd;
+        tasks[t].thread_no = t;
+        
+           
+        
+        
         pthread_create(&threads[t], NULL, normal_eq_worker, &tasks[t]);
     }
 
@@ -812,7 +833,7 @@ int main()
 
     message = "\nSolving (XᵀX)β = Xᵀy ...\n";
     send(client_fd, message, strlen(message), 0);
-    Matrix* B = solveNormalEquation_parallel(X, Y, COEFF_THREAD_LIMIT);
+    Matrix* B = solveNormalEquation_parallel(X, Y, COEFF_THREAD_LIMIT, client_fd, headers);
     message = "\nTraining completed.\n\nFINAL MODEL (Normalized Form)\n";
     send(client_fd, message, strlen(message), 0);
 
@@ -886,7 +907,6 @@ int main()
         snprintf(msgbuf, sizeof(msgbuf),
                  "%s\n",
                  buffer);
-                 send(client_fd, msgbuf, strlen(msgbuf), 0);
 
     }
 
@@ -898,7 +918,7 @@ int main()
     for (int i = 0; i < input.num_fields; i++)
     {   
         snprintf(msgbuf, sizeof(msgbuf),
-        "normalizimg = %s\n",
+        "normalizing = %s\n",
         headers[i]);
 
         send(client_fd, msgbuf, strlen(msgbuf), 0);
